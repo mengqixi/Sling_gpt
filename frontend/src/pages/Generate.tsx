@@ -1,7 +1,6 @@
 import { Copy, Download, HelpCircle, RotateCcw, Save, UploadCloud, Wand2, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
-import RecolorPanel from "../components/RecolorPanel";
 import { TASKS, taskLabel } from "../types";
 
 const defaultParams = {
@@ -29,7 +28,7 @@ const sizeOptions = [
   { group: "4K", label: "4K 竖图 · 2160 x 3840", value: "2160x3840" }
 ];
 
-export default function Generate() {
+export default function Generate({ initialUploadedImages = [] }: { initialUploadedImages?: any[] }) {
   const [taskType, setTaskType] = useState("material_replace");
   const [prompts, setPrompts] = useState<any[]>([]);
   const [configs, setConfigs] = useState<any[]>([]);
@@ -58,6 +57,13 @@ export default function Generate() {
 
   const imageSize = sizeMode === "custom" ? customImageSize : sizeMode;
   const uploaded = uploadedImages[0] || null;
+
+  useEffect(() => {
+    if (initialUploadedImages.length) {
+      setUploadedImages(initialUploadedImages);
+      setMessage("已将调色结果选为生成源图");
+    }
+  }, [initialUploadedImages]);
 
   const bagDimensionExtra = useMemo(() => {
     const length = params.bag_length_cm.trim();
@@ -290,12 +296,6 @@ export default function Generate() {
         <h1>生成工作台</h1>
         <p>参数只用于生成提示词初稿，最终请求会使用文本框里的可编辑提示词。</p>
       </header>
-      <RecolorPanel
-        onUseAsSource={(image) => {
-          setUploadedImages([image]);
-          setMessage("????????????");
-        }}
-      />
       <div className="generate-grid">
         <section className="panel">
           <h2>图片与参数</h2>

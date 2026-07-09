@@ -79,7 +79,7 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
         protect_mask: editedProtectMask
       });
       setResult(data);
-      setMessage("调色结果已保存，可下载或选为生成源图");
+      setMessage("调色结果已保存到历史记录，可下载或选为 AI 生成源图");
     } catch (error: any) {
       setMessage(error.message);
     } finally {
@@ -206,14 +206,21 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
             </button>
             <button className="primary" onClick={apply} disabled={busy || !subjectMask}>
               <Paintbrush size={16} />
-              应用调色
+              应用并保存
             </button>
           </div>
           {message && <div className="notice">{message}</div>}
           {result?.image_url && (
             <div className="recolor-result">
+              <strong>已保存到历史记录</strong>
               <img src={result.image_url} />
-              <button onClick={() => onUseAsSource(result.uploaded_image)}>选为生成源图</button>
+              <div className="toolbar compact">
+                <a href={result.image_url} download="recolor.png">
+                  <Download size={15} />
+                  下载
+                </a>
+                <button onClick={() => onUseAsSource(result.uploaded_image)}>保存为 AI 生成源图</button>
+              </div>
             </div>
           )}
         </div>
