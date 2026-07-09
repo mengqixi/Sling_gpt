@@ -21,6 +21,7 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
   const [protectMask, setProtectMask] = useState("");
   const [previewImage, setPreviewImage] = useState("");
   const [showOriginal, setShowOriginal] = useState(false);
+  const [showProtection, setShowProtection] = useState(true);
   const [result, setResult] = useState<any>(null);
   const [mode, setMode] = useState<"protect" | "erase">("protect");
   const [brushSize, setBrushSize] = useState(6);
@@ -61,6 +62,7 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
       setProtectMask("");
       setPreviewImage("");
       setShowOriginal(true);
+      setShowProtection(true);
       setResult(null);
       setMessage("");
     } catch (error: any) {
@@ -103,6 +105,7 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
       await analyzeMasks();
       setPreviewImage("");
       setShowOriginal(false);
+      setShowProtection(true);
       setMessage("已识别保护区。蓝色区域会保持原色；确认后选择颜色开始预览。");
     } catch (error: any) {
       setMessage(explainError(error));
@@ -126,6 +129,7 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
       });
       setPreviewImage(data.preview_image);
       setShowOriginal(false);
+      setShowProtection(false);
       setMessage("已生成调色预览，满意后点击保存结果。");
     } catch (error: any) {
       setMessage(explainError(error));
@@ -212,6 +216,7 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
     drawProtectMask();
     setPreviewImage("");
     setShowOriginal(false);
+    setShowProtection(true);
     setMessage("已重置保护区，请确认后重新选择颜色预览。");
   }
 
@@ -277,6 +282,10 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
                   <ImageIcon size={16} />
                   原图
                 </button>
+                <button className={showProtection ? "active-tool" : ""} onClick={() => setShowProtection((value) => !value)} disabled={!protectMask || showOriginal}>
+                  <Shield size={16} />
+                  {showProtection ? "隐藏保护区" : "显示保护区"}
+                </button>
                 <span>{Math.round(zoom * 100)}%</span>
                 <button onClick={() => setZoom(1)}>100%</button>
               </div>
@@ -285,7 +294,7 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
                   <img ref={imageRef} src={showOriginal || !previewImage ? uploaded.preview_url : previewImage} onLoad={drawProtectMask} />
                   <canvas
                     ref={canvasRef}
-                    style={{ display: showOriginal || !!previewImage ? "none" : "block" }}
+                    style={{ display: showOriginal || !showProtection ? "none" : "block" }}
                     onPointerDown={(event) => {
                       drawingRef.current = true;
                       paint(event);
