@@ -285,7 +285,7 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
                   <img ref={imageRef} src={showOriginal || !previewImage ? uploaded.preview_url : previewImage} onLoad={drawProtectMask} />
                   <canvas
                     ref={canvasRef}
-                    style={{ display: showOriginal ? "none" : "block" }}
+                    style={{ display: showOriginal || !!previewImage ? "none" : "block" }}
                     onPointerDown={(event) => {
                       drawingRef.current = true;
                       paint(event);
