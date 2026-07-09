@@ -52,6 +52,64 @@ def _hex_to_rgb(value: str) -> np.ndarray:
     return np.array([int(color[i : i + 2], 16) for i in (0, 2, 4)], dtype=np.float32)
 
 
+def _refine_subject_mask(rgb: np.ndarray, coarse: np.ndarray) -> np.ndarray:
+    cv2 = _require_cv2()
+    binary = (coarse > 0).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return binary
+
+    main_contours = [contour for contour in contours if cv2.contourArea(contour) >= max(80, rgb.shape[0] * rgb.shape[1] * 0.002)]
+    if not main_contours:
+        return binary
+    x, y, w, h = cv2.boundingRect(np.vstack(main_contours))
+    pad = max(8, min(rgb.shape[:2]) // 80)
+    x = max(1, x - pad)
+    y = max(1, y - pad)
+    w = min(rgb.shape[1] - x - 2, w + pad * 2)
+    h = min(rgb.shape[0] - y - 2, h + pad * 2)
+    if w <= 2 or h <= 2:
+        return binary
+
+    grabcut_mask = np.full(binary.shape, cv2.GC_BGD, dtype=np.uint8)
+    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    probable_fg = cv2.dilate(binary, dilate_kernel, iterations=1) > 0
+    sure_fg = cv2.erode(binary, erode_kernel, iterations=1) > 0
+    grabcut_mask[probable_fg] = cv2.GC_PR_FGD
+    grabcut_mask[sure_fg] = cv2.GC_FGD
+    grabcut_mask[:y, :] = cv2.GC_BGD
+    grabcut_mask[y + h :, :] = cv2.GC_BGD
+    grabcut_mask[:, :x] = cv2.GC_BGD
+    grabcut_mask[:, x + w :] = cv2.GC_BGD
+
+    bgd_model = np.zeros((1, 65), np.float64)
+    fgd_model = np.zeros((1, 65), np.float64)
+    try:
+        cv2.grabCut(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), grabcut_mask, (x, y, w, h), bgd_model, fgd_model, 3, cv2.GC_INIT_WITH_MASK)
+    except Exception:
+        return binary
+
+    refined = np.where((grabcut_mask == cv2.GC_FGD) | (grabcut_mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
+    refined = cv2.bitwise_and(refined, cv2.dilate(binary, dilate_kernel, iterations=1))
+    contours, hierarchy = cv2.findContours(refined, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    clean = np.zeros_like(refined)
+    if hierarchy is not None:
+        min_area = max(80, int(rgb.shape[0] * rgb.shape[1] * 0.002))
+        for index, contour in enumerate(contours):
+            area = cv2.contourArea(contour)
+            if area < min_area:
+                continue
+            parent = hierarchy[0][index][3]
+            cv2.drawContours(clean, [contour], -1, 0 if parent >= 0 else 255, thickness=-1)
+    if not np.any(clean):
+        return binary
+    edge_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    clean = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, edge_kernel, iterations=1)
+    clean = cv2.medianBlur(clean, 3)
+    return clean
+
+
 def _subject_mask(image: Image.Image) -> Image.Image:
     cv2 = _require_cv2()
     rgb = np.array(image)
@@ -85,7 +143,8 @@ def _subject_mask(image: Image.Image) -> Image.Image:
                 continue
             parent = hierarchy[0][index][3]
             cv2.drawContours(clean, [contour], -1, 0 if parent >= 0 else 255, thickness=-1)
-    return Image.fromarray(clean, mode="L").filter(ImageFilter.GaussianBlur(1.2))
+    clean = _refine_subject_mask(rgb, clean)
+    return Image.fromarray(clean, mode="L").filter(ImageFilter.GaussianBlur(0.7))
 
 
 def _hardware_mask(image: Image.Image, subject: Image.Image) -> Image.Image:
@@ -162,10 +221,10 @@ def analyze_recolor_masks(image_path: str) -> dict:
 def render_recolor_image(image_path: str, target_color: str, subject_mask: str, protect_mask: str) -> Image.Image:
     image = _load_rgb(image_path)
     target = _hex_to_rgb(target_color)
-    subject = np.array(_data_url_to_mask(subject_mask, image.size)) > 24
-    protect = np.array(_data_url_to_mask(protect_mask, image.size)) > 24
-    recolor_area = subject & ~protect
-    if not np.any(recolor_area):
+    subject_alpha = np.array(_data_url_to_mask(subject_mask, image.size)).astype(np.float32) / 255.0
+    protect_alpha = np.array(_data_url_to_mask(protect_mask, image.size)).astype(np.float32) / 255.0
+    recolor_alpha = np.clip(subject_alpha * (1.0 - protect_alpha), 0.0, 1.0)
+    if not np.any(recolor_alpha > 0.08):
         raise ValueError("没有可调色区域，请先识别主体或用画笔修正遮罩。")
 
     rgb = np.array(image).astype(np.float32)
@@ -176,8 +235,8 @@ def render_recolor_image(image_path: str, target_color: str, subject_mask: str, 
     recolored = np.clip(recolored + texture * 0.18, 0, 255)
 
     result = rgb.copy()
-    alpha = 0.86
-    result[recolor_area] = rgb[recolor_area] * (1 - alpha) + recolored[recolor_area] * alpha
+    alpha = (recolor_alpha * 0.86)[..., None]
+    result = rgb * (1 - alpha) + recolored * alpha
     return Image.fromarray(np.clip(result, 0, 255).astype(np.uint8), mode="RGB")
 
 
