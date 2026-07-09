@@ -171,10 +171,16 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
     mask.onload = () => {
       context.clearRect(0, 0, canvas.width, canvas.height);
       context.drawImage(mask, 0, 0, canvas.width, canvas.height);
-      context.globalCompositeOperation = "source-in";
-      context.fillStyle = "rgba(0, 180, 255, 0.92)";
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      context.globalCompositeOperation = "source-over";
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+      for (let index = 0; index < data.length; index += 4) {
+        const maskValue = data[index];
+        data[index] = 0;
+        data[index + 1] = 180;
+        data[index + 2] = 255;
+        data[index + 3] = maskValue > 24 ? Math.min(235, maskValue) : 0;
+      }
+      context.putImageData(imageData, 0, 0);
     };
     mask.src = protectMask;
   }
