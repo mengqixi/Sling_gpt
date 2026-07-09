@@ -95,32 +95,50 @@ def _hardware_mask(image: Image.Image, subject: Image.Image) -> Image.Image:
     hue = hsv[:, :, 0]
     saturation = hsv[:, :, 1]
     value = hsv[:, :, 2]
-    subject_arr = np.array(subject) > 40
+    subject_raw = (np.array(subject) > 40).astype(np.uint8) * 255
+    focus_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
+    subject_arr = cv2.dilate(subject_raw, focus_kernel, iterations=1) > 0
 
-    gold_hue = ((hue >= 8) & (hue <= 48) & (saturation >= 24) & (value >= 70))
+    gold_hue = ((hue >= 6) & (hue <= 52) & (saturation >= 50) & (value >= 70))
     warm_highlight = (rgb[:, :, 0] > 135) & (rgb[:, :, 1] > 105) & (rgb[:, :, 2] < 115)
-    champagne_metal = (subject_arr & (saturation <= 75) & (value >= 95) & (value <= 225) & (rgb[:, :, 0] >= rgb[:, :, 2]) & (rgb[:, :, 1] >= rgb[:, :, 2] - 8))
+    champagne_edge = (
+        subject_arr
+        & (saturation <= 120)
+        & (value >= 120)
+        & (value <= 240)
+        & (rgb[:, :, 0] >= rgb[:, :, 2] - 4)
+        & (rgb[:, :, 1] >= rgb[:, :, 2] - 14)
+        & ((rgb[:, :, 0].astype(np.int16) + rgb[:, :, 1].astype(np.int16)) > rgb[:, :, 2].astype(np.int16) * 2 + 18)
+    )
 
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     edges = cv2.Canny(gray, 55, 150)
     zipper_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 2))
     horizontal_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, zipper_kernel)
-    metal_line = subject_arr & (horizontal_edges > 0) & (value >= 65) & (saturation <= 115)
+    metal_line = subject_arr & (horizontal_edges > 0) & (value >= 65) & (saturation <= 145)
+    champagne_edge = champagne_edge & (edges > 0)
 
-    mask = (subject_arr & (gold_hue | warm_highlight | champagne_metal | metal_line)).astype(np.uint8) * 255
-    kernel = np.ones((3, 3), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.dilate(mask, kernel, iterations=2)
+    small_metal_mask = (subject_arr & (gold_hue | warm_highlight)).astype(np.uint8) * 255
+    zipper_mask = (subject_arr & (champagne_edge | metal_line)).astype(np.uint8) * 255
 
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    clean = np.zeros_like(mask)
+    contours, _ = cv2.findContours(small_metal_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    clean = np.zeros_like(small_metal_mask)
     image_area = rgb.shape[0] * rgb.shape[1]
     for contour in contours:
         area = cv2.contourArea(contour)
         x, y, w, h = cv2.boundingRect(contour)
-        is_zipper_like = w >= h * 4 and area <= image_area * 0.12
-        if 3 <= area <= image_area * 0.1 or is_zipper_like:
+        if 2 <= area <= image_area * 0.015:
             cv2.drawContours(clean, [contour], -1, 255, thickness=-1)
+
+    contours, _ = cv2.findContours(zipper_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        x, y, w, h = cv2.boundingRect(contour)
+        is_zipper_like = w >= h * 5 and 8 <= w and h <= max(10, rgb.shape[0] * 0.035)
+        if is_zipper_like and area <= image_area * 0.03:
+            cv2.drawContours(clean, [contour], -1, 255, thickness=-1)
+    kernel = np.ones((3, 3), np.uint8)
+    clean = cv2.dilate(clean, kernel, iterations=2)
     return Image.fromarray(clean, mode="L").filter(ImageFilter.GaussianBlur(0.8))
 
 
