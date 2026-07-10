@@ -392,6 +392,19 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
             </>
           )}
 
+          {taskType === "custom_generate" && (
+            <>
+              <label>自定义生成要求</label>
+              <textarea
+                value={params.extra_requirements}
+                onChange={(event) => updateParam("extra_requirements", event.target.value)}
+                rows={9}
+                placeholder="例如：保留包型和五金不变，生成巴黎左岸黄昏街拍；模特穿酒红色风衣，单肩背包，画面浪漫、带电影感。"
+              />
+              <Hint text="可以自由写场景、人物、构图、风格、颜色、需要保留或修改的部位。未明确要求修改的包型、五金、Logo 和缝线将按模板保持原样。" />
+            </>
+          )}
+
           <label>图片尺寸</label>
           <select value={sizeMode} onChange={(event) => setSizeMode(event.target.value)}>
             {Object.entries(groupedSizes).map(([group, items]) => (

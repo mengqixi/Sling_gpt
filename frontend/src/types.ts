@@ -1,7 +1,8 @@
 export const TASKS = [
   { value: "color_change", label: "包身换色", hint: "只修改包身主体颜色" },
   { value: "material_replace", label: "材质替换", hint: "只替换主体材质质感" },
-  { value: "model_showcase", label: "模特展示图", hint: "生成电商模特展示图" }
+  { value: "model_showcase", label: "模特展示图", hint: "生成电商模特展示图" },
+  { value: "custom_generate", label: "自定义生成", hint: "按自由描述生成或编辑图片" }
 ] as const;
 
 export const VARIABLES = [

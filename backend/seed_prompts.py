@@ -33,6 +33,12 @@ PROMPT_SEEDS = [
             "extra_requirements",
         ],
     },
+    {
+        "file": "05_custom_generate.txt",
+        "name": "自定义生成-可编辑版",
+        "task_type": "custom_generate",
+        "variables": ["extra_requirements", "output_count"],
+    },
 ]
 
 
