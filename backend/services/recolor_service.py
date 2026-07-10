@@ -155,45 +155,80 @@ def _hardware_mask(image: Image.Image, subject: Image.Image) -> Image.Image:
     saturation = hsv[:, :, 1]
     value = hsv[:, :, 2]
     subject_raw = (np.array(subject) > 40).astype(np.uint8) * 255
+    subject_core = subject_raw > 0
     focus_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
     subject_arr = cv2.dilate(subject_raw, focus_kernel, iterations=1) > 0
+    interior_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    subject_interior = cv2.erode(subject_raw, interior_kernel, iterations=1) > 0
 
-    gold_hue = ((hue >= 6) & (hue <= 52) & (saturation >= 50) & (value >= 70))
-    warm_highlight = (rgb[:, :, 0] > 135) & (rgb[:, :, 1] > 105) & (rgb[:, :, 2] < 115)
-    champagne_edge = (
-        subject_arr
-        & (saturation <= 120)
-        & (value >= 120)
-        & (value <= 240)
-        & (rgb[:, :, 0] >= rgb[:, :, 2] - 4)
-        & (rgb[:, :, 1] >= rgb[:, :, 2] - 14)
-        & ((rgb[:, :, 0].astype(np.int16) + rgb[:, :, 1].astype(np.int16)) > rgb[:, :, 2].astype(np.int16) * 2 + 18)
+    ys, xs = np.where(subject_core)
+    logo_region = np.zeros_like(subject_core, dtype=bool)
+    if len(xs):
+        min_x, max_x = int(xs.min()), int(xs.max())
+        min_y, max_y = int(ys.min()), int(ys.max())
+        logo_region[
+            int(min_y + (max_y - min_y) * 0.5) : int(min_y + (max_y - min_y) * 0.9) + 1,
+            int(min_x + (max_x - min_x) * 0.2) : int(min_x + (max_x - min_x) * 0.8) + 1,
+        ] = True
+
+    gold_hue = (
+        (hue >= 6)
+        & (hue <= 52)
+        & (saturation >= 65)
+        & (value >= 70)
+        & (rgb[:, :, 1] >= rgb[:, :, 2] + 8)
+        & (rgb[:, :, 0] <= rgb[:, :, 1].astype(np.int16) * 1.7)
     )
-
+    warm_highlight = (
+        (rgb[:, :, 0] > 135)
+        & (rgb[:, :, 1] > 105)
+        & (rgb[:, :, 2] < 115)
+        & (rgb[:, :, 1] >= rgb[:, :, 2] + 8)
+        & (rgb[:, :, 0] <= rgb[:, :, 1].astype(np.int16) * 1.7)
+    )
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     edges = cv2.Canny(gray, 55, 150)
+    local_gray = cv2.GaussianBlur(gray, (0, 0), sigmaX=9)
+    bright_detail = (
+        subject_interior
+        & logo_region
+        & (value >= 145)
+        & (saturation <= 150)
+        & (gray.astype(np.int16) - local_gray.astype(np.int16) >= 28)
+    )
+
     zipper_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 2))
     horizontal_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, zipper_kernel)
-    metal_line = subject_arr & (horizontal_edges > 0) & (value >= 65) & (saturation <= 145)
-    champagne_edge = champagne_edge & (edges > 0)
+    metal_line = subject_arr & (horizontal_edges > 0) & gold_hue
 
     small_metal_mask = (subject_arr & (gold_hue | warm_highlight)).astype(np.uint8) * 255
-    zipper_mask = (subject_arr & (champagne_edge | metal_line)).astype(np.uint8) * 255
+    logo_mask = (bright_detail.astype(np.uint8) * 255)
+    zipper_mask = (metal_line.astype(np.uint8) * 255)
 
     contours, _ = cv2.findContours(small_metal_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     clean = np.zeros_like(small_metal_mask)
     image_area = rgb.shape[0] * rgb.shape[1]
     for contour in contours:
         area = cv2.contourArea(contour)
-        x, y, w, h = cv2.boundingRect(contour)
         if 2 <= area <= image_area * 0.015:
+            cv2.drawContours(clean, [contour], -1, 255, thickness=-1)
+
+    # Join nearby bright glyphs into compact Logo/metal-badge candidates without merging stitch lines.
+    logo_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
+    logo_mask = cv2.morphologyEx(logo_mask, cv2.MORPH_CLOSE, logo_kernel)
+    contours, _ = cv2.findContours(logo_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        x, y, w, h = cv2.boundingRect(contour)
+        compact_logo = 3 <= area <= image_area * 0.004 and w <= rgb.shape[1] * 0.14 and h <= rgb.shape[0] * 0.05
+        if compact_logo:
             cv2.drawContours(clean, [contour], -1, 255, thickness=-1)
 
     contours, _ = cv2.findContours(zipper_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     for contour in contours:
         area = cv2.contourArea(contour)
         x, y, w, h = cv2.boundingRect(contour)
-        is_zipper_like = w >= h * 5 and 8 <= w and h <= max(10, rgb.shape[0] * 0.035)
+        is_zipper_like = w >= h * 5 and 8 <= w and h <= max(8, rgb.shape[0] * 0.025)
         if is_zipper_like and area <= image_area * 0.03:
             cv2.drawContours(clean, [contour], -1, 255, thickness=-1)
     kernel = np.ones((3, 3), np.uint8)
