@@ -82,6 +82,30 @@ def add_generated_image(job_id: int, image_path: str, source_type: str) -> None:
         )
 
 
+def replace_grid_split_images(job_id: int, source_image_id: int, image_paths: list[str]) -> None:
+    source_type = f"split_grid:{source_image_id}"
+    with db_session() as conn:
+        previous = conn.execute(
+            "SELECT image_path FROM generated_images WHERE job_id = ? AND source_type = ?",
+            (job_id, source_type),
+        ).fetchall()
+        conn.execute(
+            "DELETE FROM generated_images WHERE job_id = ? AND source_type = ?",
+            (job_id, source_type),
+        )
+        for image_path in image_paths:
+            conn.execute(
+                """
+                INSERT INTO generated_images (job_id, image_path, image_url, source_type, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (job_id, image_path, public_url_for(image_path), source_type, now_iso()),
+            )
+    for image in previous:
+        if image["image_path"]:
+            Path(image["image_path"]).unlink(missing_ok=True)
+
+
 def create_local_recolor_job(upload_row, target_color: str, result_path: str) -> int:
     ts = now_iso()
     with db_session() as conn:

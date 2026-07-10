@@ -549,7 +549,7 @@ main {
 
 .result-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   margin-top: 8px;
 }
@@ -669,6 +669,69 @@ main {
   transition: transform 120ms ease;
 }
 
+.crop-modal {
+  align-items: center;
+  background: rgba(14, 23, 20, 0.72);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 20px;
+  position: fixed;
+  z-index: 60;
+}
+
+.crop-dialog {
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.28);
+  max-height: calc(100vh - 40px);
+  max-width: min(900px, 100%);
+  overflow: auto;
+  padding: 18px;
+  width: 100%;
+}
+
+.crop-dialog h2 {
+  margin: 0;
+}
+
+.crop-dialog p {
+  color: #65736e;
+  font-size: 13px;
+  margin: 4px 0 0;
+}
+
+.crop-image-stage {
+  cursor: crosshair;
+  display: inline-block;
+  margin: 8px auto 0;
+  max-width: 100%;
+  position: relative;
+  touch-action: none;
+}
+
+.crop-image-stage img {
+  display: block;
+  max-height: min(62vh, 680px);
+  max-width: 100%;
+  user-select: none;
+}
+
+.crop-selection {
+  background: rgba(31, 79, 67, 0.08);
+  border: 2px solid #1f4f43;
+  box-shadow: 0 0 0 9999px rgba(15, 22, 19, 0.42);
+  pointer-events: none;
+  position: absolute;
+}
+
+.crop-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
 .manage-layout {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
@@ -733,14 +796,6 @@ main {
   margin-top: 0;
   min-height: 36px;
   padding: 8px 10px;
-}
-
-.auto-split-row {
-  background: #f5faf6;
-  border: 1px solid #d7e6dc;
-  border-radius: 6px;
-  margin-top: 12px;
-  padding: 9px 10px;
 }
 
 .mini-upload {
@@ -853,6 +908,23 @@ main {
   .inline-fields,
   .form-grid,
   .dimension-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .result-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .crop-modal {
+    padding: 10px;
+  }
+
+  .crop-dialog {
+    padding: 14px;
+  }
+
+  .crop-actions {
+    display: grid;
     grid-template-columns: 1fr;
   }
 }

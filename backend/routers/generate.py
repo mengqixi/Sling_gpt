@@ -4,13 +4,14 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..services.api_config_service import get_config
-from ..services.file_service import save_existing_image_as_upload, split_image_grid
+from ..services.file_service import crop_generated_image, save_existing_image_as_upload, split_image_grid
 from ..services.image_job_service import (
     add_generated_image,
     create_job,
     get_generated_image,
     get_job,
     get_upload,
+    replace_grid_split_images,
     set_job_status,
 )
 from ..services.relay_image_service import call_relay_image_api, save_images_from_response
@@ -29,6 +30,13 @@ class GeneratePayload(BaseModel):
     image_size: str = "1024x1024"
     quality: str | None = None
     params: dict = {}
+
+
+class CropPayload(BaseModel):
+    left: float
+    top: float
+    right: float
+    bottom: float
 
 
 @router.post("/generate")
@@ -65,7 +73,7 @@ def generate(payload: GeneratePayload):
             payload.quality,
         )
         saved_images = save_images_from_response(response_json, config, job_id)
-        auto_split = bool((payload.params or {}).get("auto_split_grid", True))
+        auto_split = bool((payload.params or {}).get("auto_split_grid", False))
         if auto_split and len(saved_images) == 1:
             try:
                 split_paths = split_image_grid(saved_images[0]["path"], job_id)
@@ -99,5 +107,31 @@ def reuse_generated_image(image_id: int):
         raise HTTPException(status_code=404, detail="生成图片不存在")
     try:
         return save_existing_image_as_upload(image["image_path"], file_name=f"continue_from_{image_id}.png")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/generated-images/{image_id}/split-grid")
+def split_generated_grid(image_id: int):
+    image = get_generated_image(image_id)
+    if not image:
+        raise HTTPException(status_code=404, detail="生成图片不存在")
+    try:
+        paths = split_image_grid(image["image_path"], image["job_id"])
+        replace_grid_split_images(image["job_id"], image_id, paths)
+        return {"job": get_job(image["job_id"])}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/generated-images/{image_id}/crop")
+def crop_generated(image_id: int, payload: CropPayload):
+    image = get_generated_image(image_id)
+    if not image:
+        raise HTTPException(status_code=404, detail="生成图片不存在")
+    try:
+        path = crop_generated_image(image["image_path"], image["job_id"], payload.left, payload.top, payload.right, payload.bottom)
+        add_generated_image(image["job_id"], path, f"manual_crop:{image_id}")
+        return {"job": get_job(image["job_id"])}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

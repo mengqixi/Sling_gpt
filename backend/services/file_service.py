@@ -181,6 +181,29 @@ def split_image_grid(source_path: str, job_id: int) -> list[str]:
         return paths
 
 
+def crop_generated_image(source_path: str, job_id: int, left: float, top: float, right: float, bottom: float) -> str:
+    source = Path(source_path)
+    if not source.exists():
+        raise ValueError("待裁剪图片不存在")
+    left = max(0.0, min(1.0, float(left)))
+    top = max(0.0, min(1.0, float(top)))
+    right = max(0.0, min(1.0, float(right)))
+    bottom = max(0.0, min(1.0, float(bottom)))
+    if right - left < 0.02 or bottom - top < 0.02:
+        raise ValueError("裁剪区域过小，请重新框选")
+    with Image.open(source) as img:
+        width, height = img.size
+        box = (
+            int(width * left),
+            int(height * top),
+            max(int(width * right), int(width * left) + 1),
+            max(int(height * bottom), int(height * top) + 1),
+        )
+        output = RESULT_DIR / f"job_{job_id}_crop_{uuid.uuid4().hex[:8]}.png"
+        img.crop(box).save(output)
+    return str(output)
+
+
 def decode_base64_image(value: str) -> bytes:
     try:
         return base64.b64decode(strip_data_url_prefix(value), validate=False)

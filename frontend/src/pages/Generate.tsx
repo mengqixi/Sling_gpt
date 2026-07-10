@@ -1,5 +1,5 @@
-import { Copy, Download, HelpCircle, RotateCcw, Save, UploadCloud, Wand2, X, ZoomIn, ZoomOut } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Copy, Crop, Download, HelpCircle, RotateCcw, Save, UploadCloud, Wand2, X, ZoomIn, ZoomOut } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { TASKS, taskLabel } from "../types";
 
@@ -38,7 +38,6 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
   const [params, setParams] = useState(defaultParams);
   const [sizeMode, setSizeMode] = useState("2048x2048");
   const [customImageSize, setCustomImageSize] = useState("2048x2048");
-  const [autoSplitGrid, setAutoSplitGrid] = useState(true);
   const [colorScope, setColorScope] = useState("partial");
   const [selectedParts, setSelectedParts] = useState<string[]>(["包身"]);
   const [colorNote, setColorNote] = useState("");
@@ -52,6 +51,12 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
   const [conversation, setConversation] = useState<Array<{ role: string; text: string; imageUrl?: string }>>([]);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [previewScale, setPreviewScale] = useState(1);
+  const [cropTarget, setCropTarget] = useState<any>(null);
+  const [cropRect, setCropRect] = useState({ left: 0.05, top: 0.05, right: 0.95, bottom: 0.95 });
+  const [cropBusy, setCropBusy] = useState(false);
+  const [cropError, setCropError] = useState("");
+  const cropStageRef = useRef<HTMLDivElement | null>(null);
+  const cropStartRef = useRef<{ x: number; y: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -91,10 +96,9 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
     () => ({
       ...params,
       extra_requirements: taskType === "color_change" ? colorExtra : taskType === "model_showcase" ? modelExtra : params.extra_requirements,
-      image_size: imageSize,
-      auto_split_grid: autoSplitGrid
+      image_size: imageSize
     }),
-    [params, taskType, colorExtra, modelExtra, imageSize, autoSplitGrid]
+    [params, taskType, colorExtra, modelExtra, imageSize]
   );
   const paramsKey = JSON.stringify(mergedParams);
 
@@ -187,7 +191,7 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
       final_prompt: prompt,
       api_config_id: apiConfigId,
       image_size: imageSize,
-      params: { ...mergedParams, auto_split_grid: autoSplitGrid, ...extraParams }
+      params: { ...mergedParams, ...extraParams }
     });
     setResult(data.job);
     setResultJobs((items) => (append ? [...items, data.job] : [data.job]));
@@ -227,6 +231,83 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
     setSelectedParts((current) => (current.includes(part) ? current.filter((item) => item !== part) : [...current, part]));
   }
 
+  function replaceResultJob(updatedJob: any) {
+    setResult((current: any) => (current?.job_id === updatedJob.job_id ? updatedJob : current));
+    setResultJobs((current) => current.map((job) => (job.job_id === updatedJob.job_id ? updatedJob : job)));
+  }
+
+  function openCrop(image: any) {
+    setCropTarget(image);
+    setCropRect({ left: 0.05, top: 0.05, right: 0.95, bottom: 0.95 });
+    setCropError("");
+  }
+
+  function cropPointerPosition(event: React.PointerEvent<HTMLDivElement>) {
+    const rect = cropStageRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height))
+    };
+  }
+
+  function startCropSelection(event: React.PointerEvent<HTMLDivElement>) {
+    const point = cropPointerPosition(event);
+    if (!point) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    cropStartRef.current = point;
+    setCropRect({ left: point.x, top: point.y, right: Math.min(1, point.x + 0.01), bottom: Math.min(1, point.y + 0.01) });
+  }
+
+  function moveCropSelection(event: React.PointerEvent<HTMLDivElement>) {
+    if (!cropStartRef.current) return;
+    const point = cropPointerPosition(event);
+    if (!point) return;
+    const start = cropStartRef.current;
+    setCropRect({
+      left: Math.min(start.x, point.x),
+      top: Math.min(start.y, point.y),
+      right: Math.max(start.x, point.x),
+      bottom: Math.max(start.y, point.y)
+    });
+  }
+
+  function finishCropSelection() {
+    cropStartRef.current = null;
+  }
+
+  async function saveManualCrop() {
+    if (!cropTarget?.id) return;
+    setCropBusy(true);
+    setCropError("");
+    try {
+      const data = await api.cropGeneratedImage(cropTarget.id, cropRect);
+      replaceResultJob(data.job);
+      setCropTarget(null);
+      setMessage("裁剪图片已保存到当前生成记录");
+    } catch (error: any) {
+      setCropError(error.message || "裁剪失败");
+    } finally {
+      setCropBusy(false);
+    }
+  }
+
+  async function splitGridImage() {
+    if (!cropTarget?.id) return;
+    setCropBusy(true);
+    setCropError("");
+    try {
+      const data = await api.splitGeneratedImage(cropTarget.id);
+      replaceResultJob(data.job);
+      setCropTarget(null);
+      setMessage("已自动切成四张图片，可分别预览、下载和继续修改");
+    } catch (error: any) {
+      setCropError(error.message || "自动切图失败");
+    } finally {
+      setCropBusy(false);
+    }
+  }
+
   async function continueModify() {
     if (!selectedResult?.id) {
       setMessage("请先选择一张生成结果作为继续修改的源图");
@@ -254,8 +335,7 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
       const data = await submitGenerate(nextSources.map((image) => image.image_id), nextPrompt, {
         continue_from_generated_image_id: selectedResult.id,
         continue_uploaded_image_ids: continueUploadedImages.map((image) => image.image_id),
-        continue_text: continueText.trim(),
-        auto_split_grid: false
+        continue_text: continueText.trim()
       }, true);
       if (!data) return;
       if (data.job?.status === "success") {
@@ -420,11 +500,6 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
           </select>
           {sizeMode === "custom" && <Input label="自定义尺寸" value={customImageSize} onChange={setCustomImageSize} />}
 
-          <label className="check-row auto-split-row">
-            <input type="checkbox" checked={autoSplitGrid} onChange={(event) => setAutoSplitGrid(event.target.checked)} />
-            返回单张拼图时自动切成四张
-          </label>
-
           <label>API 配置</label>
           <select value={apiConfigId} onChange={(event) => setApiConfigId(Number(event.target.value))}>
             {configs.map((config) => (
@@ -518,6 +593,10 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
                           预览
                         </button>
                         <button onClick={() => setSelectedResult(image)}>选为下一轮</button>
+                        <button onClick={() => openCrop(image)}>
+                          <Crop size={15} />
+                          裁剪
+                        </button>
                         <a href={image.image_url} download={`result_${jobIndex + 1}_${index + 1}.png`}>
                           <Download size={15} />
                           下载
@@ -592,6 +671,52 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
           </div>
           <div className="lightbox-stage" onClick={() => setPreviewImage(null)}>
             <img src={previewImage} style={{ transform: `scale(${previewScale})` }} onClick={(event) => event.stopPropagation()} />
+          </div>
+        </div>
+      )}
+
+      {cropTarget && (
+        <div className="crop-modal" role="dialog" aria-modal="true" aria-label="裁剪图片">
+          <div className="crop-dialog">
+            <div className="panel-title-row">
+              <div>
+                <h2>裁剪图片</h2>
+                <p>在图片上拖动框选裁剪区域，或直接自动切成四张。</p>
+              </div>
+              <button onClick={() => setCropTarget(null)} title="关闭">
+                <X size={18} />
+              </button>
+            </div>
+            <div
+              className="crop-image-stage"
+              ref={cropStageRef}
+              onPointerDown={startCropSelection}
+              onPointerMove={moveCropSelection}
+              onPointerUp={finishCropSelection}
+              onPointerCancel={finishCropSelection}
+            >
+              <img src={cropTarget.image_url} draggable={false} />
+              <div
+                className="crop-selection"
+                style={{
+                  left: `${cropRect.left * 100}%`,
+                  top: `${cropRect.top * 100}%`,
+                  width: `${(cropRect.right - cropRect.left) * 100}%`,
+                  height: `${(cropRect.bottom - cropRect.top) * 100}%`
+                }}
+              />
+            </div>
+            {cropError && <div className="notice">{cropError}</div>}
+            <div className="crop-actions">
+              <button onClick={splitGridImage} disabled={cropBusy}>
+                <Crop size={16} />
+                自动切四张
+              </button>
+              <button className="primary" onClick={saveManualCrop} disabled={cropBusy}>
+                <Save size={16} />
+                {cropBusy ? "处理中" : "保存裁剪"}
+              </button>
+            </div>
           </div>
         </div>
       )}
