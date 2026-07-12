@@ -23,6 +23,8 @@ class ApplyPayload(BaseModel):
     target_color: str
     subject_mask: str
     protect_mask: str
+    recolor_strength: int = 86
+    texture_strength: int = 78
 
 
 class SelectPayload(BaseModel):
@@ -72,7 +74,10 @@ def apply(payload: ApplyPayload):
     if not upload:
         raise HTTPException(status_code=404, detail="上传图片不存在")
     try:
-        result_path = apply_recolor(upload["file_path"], payload.target_color, payload.subject_mask, payload.protect_mask)
+        result_path = apply_recolor(
+            upload["file_path"], payload.target_color, payload.subject_mask, payload.protect_mask,
+            payload.recolor_strength, payload.texture_strength,
+        )
         job_id = create_local_recolor_job(upload, payload.target_color, result_path)
         generated = get_job(job_id)["results"][0]
         reusable_upload = save_existing_image_as_upload(result_path, file_name=f"recolor_{job_id}.png")
@@ -92,7 +97,10 @@ def preview(payload: ApplyPayload):
     if not upload:
         raise HTTPException(status_code=404, detail="上传图片不存在")
     try:
-        return preview_recolor(upload["file_path"], payload.target_color, payload.subject_mask, payload.protect_mask)
+        return preview_recolor(
+            upload["file_path"], payload.target_color, payload.subject_mask, payload.protect_mask,
+            payload.recolor_strength, payload.texture_strength,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

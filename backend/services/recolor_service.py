@@ -552,7 +552,14 @@ def select_hardware_region(
     }
 
 
-def render_recolor_image(image_path: str, target_color: str, subject_mask: str, protect_mask: str) -> Image.Image:
+def render_recolor_image(
+    image_path: str,
+    target_color: str,
+    subject_mask: str,
+    protect_mask: str,
+    recolor_strength: int = 86,
+    texture_strength: int = 78,
+) -> Image.Image:
     image = _load_rgb(image_path)
     target = _hex_to_rgb(target_color)
     subject_alpha = np.array(_data_url_to_mask(subject_mask, image.size)).astype(np.float32) / 255.0
@@ -562,25 +569,38 @@ def render_recolor_image(image_path: str, target_color: str, subject_mask: str, 
         raise ValueError("没有可调色区域，请先识别主体或用画笔修正遮罩。")
 
     rgb = np.array(image).astype(np.float32)
+    strength = float(np.clip(recolor_strength, 0, 100)) / 100.0
+    texture_amount = float(np.clip(texture_strength, 0, 100)) / 100.0
     luminance = (0.2126 * rgb[:, :, 0] + 0.7152 * rgb[:, :, 1] + 0.0722 * rgb[:, :, 2]) / 255.0
-    shade = 0.28 + luminance[..., None] * 0.95
+    preserved_shade = 0.28 + luminance[..., None] * 0.95
+    shade = (1.0 - texture_amount) * 0.82 + texture_amount * preserved_shade
     recolored = np.clip(target[None, None, :] * shade, 0, 255)
     texture = rgb - luminance[..., None] * 255.0
-    recolored = np.clip(recolored + texture * 0.18, 0, 255)
+    recolored = np.clip(recolored + texture * (0.04 + texture_amount * 0.24), 0, 255)
 
     result = rgb.copy()
-    alpha = (recolor_alpha * 0.86)[..., None]
+    alpha = (recolor_alpha * strength)[..., None]
     result = rgb * (1 - alpha) + recolored * alpha
     return Image.fromarray(np.clip(result, 0, 255).astype(np.uint8), mode="RGB")
 
 
-def preview_recolor(image_path: str, target_color: str, subject_mask: str, protect_mask: str) -> dict:
-    result_image = render_recolor_image(image_path, target_color, subject_mask, protect_mask)
+def preview_recolor(
+    image_path: str, target_color: str, subject_mask: str, protect_mask: str,
+    recolor_strength: int = 86, texture_strength: int = 78,
+) -> dict:
+    result_image = render_recolor_image(
+        image_path, target_color, subject_mask, protect_mask, recolor_strength, texture_strength
+    )
     return {"preview_image": _image_to_data_url(result_image)}
 
 
-def apply_recolor(image_path: str, target_color: str, subject_mask: str, protect_mask: str) -> str:
-    result_image = render_recolor_image(image_path, target_color, subject_mask, protect_mask)
+def apply_recolor(
+    image_path: str, target_color: str, subject_mask: str, protect_mask: str,
+    recolor_strength: int = 86, texture_strength: int = 78,
+) -> str:
+    result_image = render_recolor_image(
+        image_path, target_color, subject_mask, protect_mask, recolor_strength, texture_strength
+    )
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
     output = RESULT_DIR / f"recolor_{uuid.uuid4().hex[:12]}.png"
     result_image.save(output)
