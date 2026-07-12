@@ -70,7 +70,7 @@ def _run_generation(job_id: int, payload: dict, image_paths: list[str], config: 
             except Exception as exc:
                 result_queue.put(("error", exc))
 
-        hard_timeout = min(max(int(config.get("timeout_seconds") or 180), 30), 180)
+        hard_timeout = min(max(int(config.get("timeout_seconds") or 350), 30), 350)
         Thread(target=request_relay, daemon=True, name=f"relay-job-{job_id}").start()
         try:
             outcome, value = result_queue.get(timeout=hard_timeout)
