@@ -28,12 +28,26 @@ const sizeOptions = [
   { group: "4K", label: "4K 竖图 · 2160 x 3840", value: "2160x3840" }
 ];
 
+function preferredApiConfig(rows: any[]) {
+  const enabled = rows.filter((item) => item.enabled);
+  return enabled.find((item) => item.config_name?.trim() === "快速") || enabled.find((item) => item.is_default) || enabled[0] || null;
+}
+
+function statusLabel(status: string) {
+  if (status === "unknown") return "结果未知";
+  if (status === "success") return "成功";
+  if (status === "failed") return "失败";
+  if (status === "running") return "生成中";
+  return status;
+}
+
 export default function Generate({ initialUploadedImages = [] }: { initialUploadedImages?: any[] }) {
   const [taskType, setTaskType] = useState("material_replace");
   const [prompts, setPrompts] = useState<any[]>([]);
   const [configs, setConfigs] = useState<any[]>([]);
   const [templateId, setTemplateId] = useState<number | "">("");
   const [apiConfigId, setApiConfigId] = useState<number | "">("");
+  const [continueApiConfigId, setContinueApiConfigId] = useState<number | "">("");
   const [uploadedImages, setUploadedImages] = useState<any[]>([]);
   const [params, setParams] = useState(defaultParams);
   const [sizeMode, setSizeMode] = useState("2048x2048");
@@ -52,7 +66,7 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [previewScale, setPreviewScale] = useState(1);
   const [cropTarget, setCropTarget] = useState<any>(null);
-  const [cropRect, setCropRect] = useState({ left: 0.05, top: 0.05, right: 0.95, bottom: 0.95 });
+  const [cropRect, setCropRect] = useState<{ left: number; top: number; right: number; bottom: number } | null>(null);
   const [cropBusy, setCropBusy] = useState(false);
   const [cropError, setCropError] = useState("");
   const cropStageRef = useRef<HTMLDivElement | null>(null);
@@ -109,11 +123,13 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
   async function reload() {
     const [promptRows, configRows] = await Promise.all([api.getPrompts(taskType), api.getApiConfigs()]);
     setPrompts(promptRows);
-    setConfigs(configRows);
+    const enabledConfigs = configRows.filter((item) => item.enabled);
+    setConfigs(enabledConfigs);
     const defaultPrompt = promptRows.find((item) => item.is_default) || promptRows[0];
     if (defaultPrompt) setTemplateId(defaultPrompt.id);
-    const defaultConfig = configRows.find((item) => item.is_default) || configRows[0];
+    const defaultConfig = preferredApiConfig(configRows);
     if (defaultConfig) setApiConfigId(defaultConfig.id);
+    if (defaultConfig) setContinueApiConfigId(defaultConfig.id);
   }
 
   useEffect(() => {
@@ -174,8 +190,14 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
     setMessage("已另存为新模板");
   }
 
-  async function submitGenerate(uploadedImageIds: number[], prompt: string, extraParams: any = {}, append = false) {
-    if (!apiConfigId) {
+  async function submitGenerate(
+    uploadedImageIds: number[],
+    prompt: string,
+    extraParams: any = {},
+    append = false,
+    selectedConfigId: number | "" = apiConfigId
+  ) {
+    if (!selectedConfigId) {
       setMessage("请先选择 API 配置");
       return null;
     }
@@ -189,7 +211,7 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
       uploaded_image_ids: uploadedImageIds,
       prompt_template_id: templateId || null,
       final_prompt: prompt,
-      api_config_id: apiConfigId,
+      api_config_id: selectedConfigId,
       image_size: imageSize,
       params: { ...mergedParams, ...extraParams }
     });
@@ -215,6 +237,7 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
       if (data.job?.status === "success") {
         setConversation((items) => [...items, { role: "生成", text: finalPrompt, imageUrl: data.job?.results?.[0]?.image_url }]);
       }
+      if (data.status === "unknown") setMessage(data.job.error_message || "结果未知，可能已扣费；系统不会自动重试");
       if (data.status === "failed") setMessage(data.job.error_message || "生成失败");
     } catch (error: any) {
       setMessage(error.message);
@@ -238,7 +261,7 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
 
   function openCrop(image: any) {
     setCropTarget(image);
-    setCropRect({ left: 0.05, top: 0.05, right: 0.95, bottom: 0.95 });
+    setCropRect(null);
     setCropError("");
   }
 
@@ -256,7 +279,8 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
     if (!point) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     cropStartRef.current = point;
-    setCropRect({ left: point.x, top: point.y, right: Math.min(1, point.x + 0.01), bottom: Math.min(1, point.y + 0.01) });
+    setCropRect(null);
+    setCropError("");
   }
 
   function moveCropSelection(event: React.PointerEvent<HTMLDivElement>) {
@@ -274,10 +298,18 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
 
   function finishCropSelection() {
     cropStartRef.current = null;
+    if (cropRect && (cropRect.right - cropRect.left < 0.01 || cropRect.bottom - cropRect.top < 0.01)) {
+      setCropRect(null);
+      setCropError("裁剪区域过小，请重新拖动选择");
+    }
   }
 
   async function saveManualCrop() {
     if (!cropTarget?.id) return;
+    if (!cropRect) {
+      setCropError("请先在图片上拖动选择裁剪区域");
+      return;
+    }
     setCropBusy(true);
     setCropError("");
     try {
@@ -336,14 +368,17 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
         continue_from_generated_image_id: selectedResult.id,
         continue_uploaded_image_ids: continueUploadedImages.map((image) => image.image_id),
         continue_text: continueText.trim()
-      }, true);
+      }, true, continueApiConfigId);
       if (!data) return;
       if (data.job?.status === "success") {
         setConversation((items) => [...items, { role: "继续修改", text: continueText.trim(), imageUrl: data.job?.results?.[0]?.image_url }]);
         setContinueText("");
         setContinueUploadedImages([]);
       }
+      if (data.status === "unknown") setMessage(data.job.error_message || "结果未知，可能已扣费；系统不会自动重试");
       if (data.status === "failed") setMessage(data.job.error_message || "继续修改失败");
+      const fastConfig = preferredApiConfig(configs);
+      if (fastConfig) setContinueApiConfigId(fastConfig.id);
     } catch (error: any) {
       setMessage(error.message);
     } finally {
@@ -358,6 +393,8 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
     setSelectedResult(null);
     setContinueUploadedImages([]);
     setContinueText("");
+    const fastConfig = preferredApiConfig(configs);
+    setContinueApiConfigId(fastConfig?.id || "");
     setConversation([]);
     setFinalPrompt("");
     setPromptTouched(false);
@@ -559,7 +596,18 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
             {loading ? "生成中" : "开始生成"}
           </button>
           {message && <div className="notice">{message}</div>}
-          {result && <div className={`status ${result.status}`}>{result.status}</div>}
+          {result && <div className={`status ${result.status}`}>{statusLabel(result.status)}</div>}
+          {result?.status === "unknown" && (
+            <button
+              onClick={() => {
+                const fastConfig = preferredApiConfig(configs);
+                if (fastConfig) setApiConfigId(fastConfig.id);
+                setMessage("已切换到快速 API，尚未重新发送请求。请确认中转站记录后再手动生成。");
+              }}
+            >
+              切换到快速 API
+            </button>
+          )}
           {result?.status === "failed" && (
             <button onClick={generate} disabled={loading}>
               <RotateCcw size={16} />
@@ -608,7 +656,7 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
               </article>
             ))}
           </div>
-          {result?.results?.length > 0 && (
+          {resultJobs.some((job) => job?.results?.length > 0) && (
             <div className="continue-box">
               <h3>连续修改</h3>
               <p>选择上面一张图，输入下一轮要求后继续生成。</p>
@@ -624,6 +672,14 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
                   ))}
                 </div>
               )}
+              <label>本轮 API 配置</label>
+              <select value={continueApiConfigId} onChange={(event) => setContinueApiConfigId(Number(event.target.value))}>
+                {configs.map((config) => (
+                  <option key={config.id} value={config.id}>
+                    {config.config_name} {config.config_name?.trim() === "快速" ? "(默认)" : ""}
+                  </option>
+                ))}
+              </select>
               <textarea rows={4} value={continueText} onChange={(event) => setContinueText(event.target.value)} placeholder="例如：保持包型不变，把肩带改成黑色，五金改成哑光银色。" />
               <button className="primary" onClick={continueModify} disabled={loading}>
                 继续修改
@@ -696,23 +752,26 @@ export default function Generate({ initialUploadedImages = [] }: { initialUpload
               onPointerCancel={finishCropSelection}
             >
               <img src={cropTarget.image_url} draggable={false} />
-              <div
-                className="crop-selection"
-                style={{
-                  left: `${cropRect.left * 100}%`,
-                  top: `${cropRect.top * 100}%`,
-                  width: `${(cropRect.right - cropRect.left) * 100}%`,
-                  height: `${(cropRect.bottom - cropRect.top) * 100}%`
-                }}
-              />
+              {cropRect && (
+                <div
+                  className="crop-selection"
+                  style={{
+                    left: `${cropRect.left * 100}%`,
+                    top: `${cropRect.top * 100}%`,
+                    width: `${(cropRect.right - cropRect.left) * 100}%`,
+                    height: `${(cropRect.bottom - cropRect.top) * 100}%`
+                  }}
+                />
+              )}
             </div>
+            {cropRect && <div className="status success">已选择裁剪区域</div>}
             {cropError && <div className="notice">{cropError}</div>}
             <div className="crop-actions">
               <button onClick={splitGridImage} disabled={cropBusy}>
                 <Crop size={16} />
                 自动切四张
               </button>
-              <button className="primary" onClick={saveManualCrop} disabled={cropBusy}>
+              <button className="primary" onClick={saveManualCrop} disabled={cropBusy || !cropRect}>
                 <Save size={16} />
                 {cropBusy ? "处理中" : "保存裁剪"}
               </button>

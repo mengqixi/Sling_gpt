@@ -16,4 +16,4 @@ export const VARIABLES = [
   "extra_requirements"
 ];
 
-export const taskLabel = (value: string) => TASKS.find((task) => task.value === value)?.label || value;
+export const taskLabel = (value: string) => value === "ecommerce" ? "ELLE箱包电商图" : TASKS.find((task) => task.value === value)?.label || value;

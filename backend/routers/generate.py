@@ -14,7 +14,7 @@ from ..services.image_job_service import (
     replace_grid_split_images,
     set_job_status,
 )
-from ..services.relay_image_service import call_relay_image_api, save_images_from_response
+from ..services.relay_image_service import RelayGatewayTimeoutError, call_relay_image_api, save_images_from_response
 
 router = APIRouter(prefix="/api", tags=["generate"])
 
@@ -85,6 +85,9 @@ def generate(payload: GeneratePayload):
             for item in saved_images:
                 add_generated_image(job_id, item["path"], item["source_type"])
         set_job_status(job_id, "success", response_json=response_json)
+    except RelayGatewayTimeoutError as exc:
+        elapsed = round(perf_counter() - started, 1)
+        set_job_status(job_id, "unknown", error_message=f"{exc}（本次请求耗时 {elapsed} 秒）")
     except Exception as exc:
         elapsed = round(perf_counter() - started, 1)
         set_job_status(job_id, "failed", error_message=f"{exc}（本次请求耗时 {elapsed} 秒）")

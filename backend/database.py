@@ -164,3 +164,12 @@ def init_db() -> None:
                     ts,
                 ),
             )
+        fast = conn.execute(
+            "SELECT id FROM api_configs WHERE config_name = '快速' AND enabled = 1 ORDER BY id LIMIT 1"
+        ).fetchone()
+        if fast:
+            conn.execute("UPDATE api_configs SET is_default = 0")
+            conn.execute(
+                "UPDATE api_configs SET is_default = 1, updated_at = ? WHERE id = ?",
+                (now_iso(), fast["id"]),
+            )

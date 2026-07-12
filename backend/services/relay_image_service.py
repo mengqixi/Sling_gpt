@@ -14,6 +14,10 @@ from .file_service import (
 from .json_path_service import json_path_get
 
 
+class RelayGatewayTimeoutError(ValueError):
+    """The relay accepted the request but its gateway did not return a result."""
+
+
 def _auth_headers(config: dict[str, Any]) -> dict[str, str]:
     headers: dict[str, str] = {}
     auth_type = (config.get("auth_type") or "bearer").lower()
@@ -82,9 +86,9 @@ def _raise_for_status(response: requests.Response) -> None:
     except requests.HTTPError as exc:
         summary = _summarize_error_body(response.text)
         if response.status_code == 524:
-            raise ValueError(
+            raise RelayGatewayTimeoutError(
                 "中转站返回错误：HTTP 524，网关超时。请求已发到中转站，但中转站或上游生图服务长时间没有返回结果。"
-                "可以稍后重试，或在 API 设置里增加超时时间；如果仍然 524，需要检查中转站服务端超时限制。"
+                "本次结果无法确认且可能已经扣费；系统不会自动重试。请先检查中转站记录，再决定是否改用快速 API。"
             ) from exc
         raise ValueError(f"中转站返回错误：HTTP {response.status_code}。{summary}") from exc
 

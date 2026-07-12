@@ -3,6 +3,14 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { taskLabel } from "../types";
 
+function statusLabel(status: string) {
+  if (status === "unknown") return "结果未知，可能已扣费";
+  if (status === "success") return "成功";
+  if (status === "failed") return "失败";
+  if (status === "running") return "生成中";
+  return status;
+}
+
 export default function HistoryPage() {
   const [items, setItems] = useState<any[]>([]);
   const [message, setMessage] = useState("");
@@ -39,7 +47,7 @@ export default function HistoryPage() {
             <div className="history-body">
               <div className="history-title">
                 <strong>{taskLabel(item.task_type)}</strong>
-                <span className={`status ${item.status}`}>{item.status}</span>
+                <span className={`status ${item.status}`}>{statusLabel(item.status)}</span>
               </div>
               <p>{item.final_prompt}</p>
               <small>

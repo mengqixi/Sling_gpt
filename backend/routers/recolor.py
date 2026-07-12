@@ -3,7 +3,13 @@ from pydantic import BaseModel
 
 from ..services.file_service import save_existing_image_as_upload
 from ..services.image_job_service import create_local_recolor_job, get_generated_image, get_job, get_upload
-from ..services.recolor_service import analyze_recolor_masks, apply_recolor, preview_recolor, result_payload
+from ..services.recolor_service import (
+    analyze_recolor_masks,
+    apply_recolor,
+    preview_recolor,
+    result_payload,
+    select_hardware_region,
+)
 
 router = APIRouter(prefix="/api/recolor", tags=["recolor"])
 
@@ -19,6 +25,16 @@ class ApplyPayload(BaseModel):
     protect_mask: str
 
 
+class SelectPayload(BaseModel):
+    uploaded_image_id: int
+    protect_mask: str
+    left: int
+    top: int
+    right: int
+    bottom: int
+    action: str = "add"
+
+
 class ReusePayload(BaseModel):
     generated_image_id: int
 
@@ -30,6 +46,22 @@ def analyze(payload: AnalyzePayload):
         raise HTTPException(status_code=404, detail="上传图片不存在")
     try:
         return analyze_recolor_masks(upload["file_path"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/select")
+def select(payload: SelectPayload):
+    upload = get_upload(payload.uploaded_image_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="上传图片不存在")
+    try:
+        return select_hardware_region(
+            upload["file_path"],
+            payload.protect_mask,
+            (payload.left, payload.top, payload.right, payload.bottom),
+            payload.action,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

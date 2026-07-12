@@ -1,4 +1,4 @@
-import { Download, Eraser, Eye, Image as ImageIcon, Pipette, RotateCcw, Save, Shield, UploadCloud } from "lucide-react";
+import { Download, Eraser, Eye, Image as ImageIcon, Pipette, RotateCcw, Save, ScanSearch, Shield, UploadCloud } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 
@@ -14,16 +14,26 @@ type Props = {
 
 const palette = ["#111111", "#f5f2ea", "#b52126", "#8a1f1d", "#2f4d3c", "#5f4635", "#d9c7a3", "#6f7d8f"];
 
+type SelectionBox = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  action: "add" | "remove";
+};
+
 export default function RecolorPanel({ onUseAsSource }: Props) {
   const [uploaded, setUploaded] = useState<UploadedImage | null>(null);
   const [targetColor, setTargetColor] = useState("#b52126");
   const [subjectMask, setSubjectMask] = useState("");
   const [protectMask, setProtectMask] = useState("");
+  const [initialProtectMask, setInitialProtectMask] = useState("");
   const [previewImage, setPreviewImage] = useState("");
   const [showOriginal, setShowOriginal] = useState(false);
   const [showProtection, setShowProtection] = useState(true);
   const [result, setResult] = useState<any>(null);
-  const [mode, setMode] = useState<"protect" | "erase">("protect");
+  const [mode, setMode] = useState<"smart" | "protect" | "erase">("protect");
+  const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
   const [brushSize, setBrushSize] = useState(6);
   const [zoom, setZoom] = useState(1);
   const [busy, setBusy] = useState(false);
@@ -32,6 +42,7 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
   const imageRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const drawingRef = useRef(false);
+  const selectionStartRef = useRef<{ x: number; y: number; action: "add" | "remove" } | null>(null);
   const previewTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -60,10 +71,12 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
       setUploaded(row);
       setSubjectMask("");
       setProtectMask("");
+      setInitialProtectMask("");
       setPreviewImage("");
       setShowOriginal(true);
       setShowProtection(true);
       setResult(null);
+      setSelectionBox(null);
       setMessage("");
     } catch (error: any) {
       setMessage(error.message);
@@ -85,15 +98,39 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
     const data = await api.analyzeRecolor({ uploaded_image_id: uploaded.image_id });
     setSubjectMask(data.subject_mask);
     setProtectMask(data.protect_mask);
+    setInitialProtectMask(data.protect_mask);
     setMessage(`已自动识别主体和五金候选区：${data.segmentation_backend}`);
     return data;
   }
 
-  async function ensureMasks() {
+  function exportProtectMask() {
+    const canvas = canvasRef.current;
+    if (!canvas) return protectMask;
+    const context = canvas.getContext("2d");
+    if (!context) return protectMask;
+    const source = context.getImageData(0, 0, canvas.width, canvas.height);
+    const cleanCanvas = document.createElement("canvas");
+    cleanCanvas.width = canvas.width;
+    cleanCanvas.height = canvas.height;
+    const cleanContext = cleanCanvas.getContext("2d");
+    if (!cleanContext) return protectMask;
+    const clean = cleanContext.createImageData(canvas.width, canvas.height);
+    for (let index = 0; index < source.data.length; index += 4) {
+      const value = source.data[index + 3] > 24 ? 255 : 0;
+      clean.data[index] = value;
+      clean.data[index + 1] = value;
+      clean.data[index + 2] = value;
+      clean.data[index + 3] = 255;
+    }
+    cleanContext.putImageData(clean, 0, 0);
+    return cleanCanvas.toDataURL("image/png");
+  }
+
+  async function ensureMasks(protectOverride?: string) {
     if (subjectMask && protectMask) {
       return {
         subject_mask: subjectMask,
-        protect_mask: canvasRef.current?.toDataURL("image/png") || protectMask
+        protect_mask: protectOverride || exportProtectMask() || protectMask
       };
     }
     throw new Error("请先点击“自动识别”，确认五金保护区后再调色。");
@@ -106,6 +143,7 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
       setPreviewImage("");
       setShowOriginal(false);
       setShowProtection(true);
+      setMode("smart");
       setMessage("已识别保护区。蓝色区域会保持原色；确认后选择颜色开始预览。");
     } catch (error: any) {
       setMessage(explainError(error));
@@ -114,13 +152,13 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
     }
   }
 
-  async function refreshPreview() {
+  async function refreshPreview(protectOverride?: string) {
     if (!uploaded) {
       return;
     }
     setPreviewBusy(true);
     try {
-      const masks = await ensureMasks();
+      const masks = await ensureMasks(protectOverride);
       const data = await api.previewRecolor({
         uploaded_image_id: uploaded.image_id,
         target_color: targetColor,
@@ -199,7 +237,7 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
   }
 
   function paint(event: React.PointerEvent<HTMLCanvasElement>) {
-    if (!drawingRef.current || !canvasRef.current) return;
+    if (mode === "smart" || !drawingRef.current || !canvasRef.current) return;
     const context = canvasRef.current.getContext("2d");
     if (!context) return;
     const point = pointerPosition(event);
@@ -213,18 +251,118 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
   }
 
   function resetMask() {
-    drawProtectMask();
-    setPreviewImage("");
+    if (!initialProtectMask) return;
+    setProtectMask(initialProtectMask);
     setShowOriginal(false);
     setShowProtection(true);
-    setMessage("已重置保护区，请确认后重新选择颜色预览。");
+    setMessage("已恢复自动识别得到的保护区，可继续修改或重新预览。");
+    if (previewImage) refreshPreview(initialProtectMask);
   }
 
   function finishPaint() {
+    if (!drawingRef.current) return;
     drawingRef.current = false;
+    const updatedMask = exportProtectMask();
+    if (updatedMask) setProtectMask(updatedMask);
     if (previewImage) {
-      refreshPreview();
+      refreshPreview(updatedMask);
     }
+  }
+
+  function startCanvasAction(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (mode !== "smart") {
+      drawingRef.current = true;
+      paint(event);
+      return;
+    }
+    if (!protectMask) {
+      setMessage("请先点击“自动识别”，再用智能框选补充或排除五金。");
+      return;
+    }
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const point = pointerPosition(event);
+    const action = event.button === 2 ? "remove" : "add";
+    selectionStartRef.current = { ...point, action };
+    setSelectionBox({ left: point.x, top: point.y, right: point.x, bottom: point.y, action });
+  }
+
+  function moveCanvasAction(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (mode !== "smart") {
+      paint(event);
+      return;
+    }
+    const start = selectionStartRef.current;
+    if (!start) return;
+    const point = pointerPosition(event);
+    setSelectionBox({
+      left: Math.min(start.x, point.x),
+      top: Math.min(start.y, point.y),
+      right: Math.max(start.x, point.x),
+      bottom: Math.max(start.y, point.y),
+      action: start.action
+    });
+  }
+
+  async function finishCanvasAction(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (mode !== "smart") {
+      finishPaint();
+      return;
+    }
+    const start = selectionStartRef.current;
+    if (!start || !uploaded || !canvasRef.current) return;
+    const point = pointerPosition(event);
+    selectionStartRef.current = null;
+    const box: SelectionBox = {
+      left: Math.floor(Math.min(start.x, point.x)),
+      top: Math.floor(Math.min(start.y, point.y)),
+      right: Math.ceil(Math.max(start.x, point.x)),
+      bottom: Math.ceil(Math.max(start.y, point.y)),
+      action: start.action
+    };
+    setSelectionBox(null);
+    setBusy(true);
+    try {
+      const data = await api.selectRecolorHardware({
+        uploaded_image_id: uploaded.image_id,
+        protect_mask: exportProtectMask(),
+        ...box
+      });
+      if (!data.selected_pixels) {
+        setMessage("该区域没有找到清晰轮廓，请框紧一些或使用保护画笔补充。");
+        return;
+      }
+      setProtectMask(data.protect_mask);
+      setShowOriginal(false);
+      setShowProtection(true);
+      setMessage(box.action === "add" ? "已添加智能框选区域。可继续框选其他五金。" : "已排除智能框选区域。");
+      if (previewImage) await refreshPreview(data.protect_mask);
+    } catch (error: any) {
+      setMessage(explainError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function activateSmartSelection() {
+    if (!protectMask) {
+      setMessage("请先点击“自动识别”，再使用智能框选修正结果。");
+      return;
+    }
+    setMode("smart");
+    setShowOriginal(false);
+    setShowProtection(true);
+    setMessage("左键拖框添加五金保护，右键拖框排除错误区域；单击会选择点击附近的小区域。");
+  }
+
+  function activateBrush(nextMode: "protect" | "erase") {
+    if (!protectMask) {
+      setMessage("请先点击“自动识别”，再使用画笔修正保护区。");
+      return;
+    }
+    setMode(nextMode);
+    setShowOriginal(false);
+    setShowProtection(true);
+    setMessage(nextMode === "protect" ? "在图片上涂抹需要保持原色的五金。" : "在蓝色区域上涂抹，排除错误保护区域。");
   }
 
   function wheelZoom(event: React.WheelEvent<HTMLDivElement>) {
@@ -295,14 +433,31 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
                   <canvas
                     ref={canvasRef}
                     style={{ display: showOriginal || !showProtection ? "none" : "block" }}
-                    onPointerDown={(event) => {
-                      drawingRef.current = true;
-                      paint(event);
+                    className={mode === "smart" ? "smart-select-canvas" : ""}
+                    onContextMenu={(event) => event.preventDefault()}
+                    onPointerDown={startCanvasAction}
+                    onPointerMove={moveCanvasAction}
+                    onPointerUp={finishCanvasAction}
+                    onPointerLeave={() => {
+                      if (mode !== "smart") finishPaint();
                     }}
-                    onPointerMove={paint}
-                    onPointerUp={finishPaint}
-                    onPointerLeave={finishPaint}
+                    onPointerCancel={() => {
+                      selectionStartRef.current = null;
+                      setSelectionBox(null);
+                      finishPaint();
+                    }}
                   />
+                  {selectionBox && canvasRef.current && (
+                    <div
+                      className={`smart-selection-box ${selectionBox.action}`}
+                      style={{
+                        left: `${(selectionBox.left / canvasRef.current.width) * 100}%`,
+                        top: `${(selectionBox.top / canvasRef.current.height) * 100}%`,
+                        width: `${((selectionBox.right - selectionBox.left) / canvasRef.current.width) * 100}%`,
+                        height: `${((selectionBox.bottom - selectionBox.top) / canvasRef.current.height) * 100}%`
+                      }}
+                    />
+                  )}
                 </div>
               </div>
             </div>
@@ -320,17 +475,21 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
               <button key={color} className="swatch" style={{ background: color }} onClick={() => chooseColor(color)} title={color} />
             ))}
           </div>
-          <p className="recolor-help">先点“自动识别”并确认蓝色五金保护区。之后点调色盘或修改颜色才会生成预览，不会保存历史。</p>
+          <p className="recolor-help">先用“自动识别”得到初稿，再用“智能框选”修正：左键框选五金，右键框选可排除误识别。之后选择颜色生成预览。</p>
           <div className="toolbar">
             <button onClick={analyze} disabled={busy || !uploaded}>
               <Pipette size={16} />
               自动识别
             </button>
-            <button className={mode === "protect" ? "active-tool" : ""} onClick={() => setMode("protect")}>
+            <button className={mode === "smart" ? "active-tool" : ""} onClick={activateSmartSelection} disabled={!uploaded || busy}>
+              <ScanSearch size={16} />
+              智能框选
+            </button>
+            <button className={mode === "protect" ? "active-tool" : ""} onClick={() => activateBrush("protect")}>
               <Shield size={16} />
               保护五金
             </button>
-            <button className={mode === "erase" ? "active-tool" : ""} onClick={() => setMode("erase")}>
+            <button className={mode === "erase" ? "active-tool" : ""} onClick={() => activateBrush("erase")}>
               <Eraser size={16} />
               擦除保护
             </button>
@@ -338,7 +497,7 @@ export default function RecolorPanel({ onUseAsSource }: Props) {
           <label>画笔大小：{brushSize}px</label>
           <input type="range" min="1" max="30" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))} />
           <div className="toolbar">
-            <button onClick={resetMask} disabled={!protectMask}>
+            <button onClick={resetMask} disabled={!initialProtectMask}>
               <RotateCcw size={16} />
               重置保护区
             </button>
