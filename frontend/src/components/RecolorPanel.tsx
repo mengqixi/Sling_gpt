@@ -14,8 +14,6 @@ type Props = {
   onSendOriginalToAi: (image: UploadedImage, targetColor: string) => void;
 };
 
-const palette = ["#111111", "#f5f2ea", "#b52126", "#8a1f1d", "#2f4d3c", "#5f4635", "#d9c7a3", "#6f7d8f"];
-
 type SelectionBox = {
   left: number;
   top: number;
@@ -576,11 +574,6 @@ export default function RecolorPanel({ onUseAsSource, onSendOriginalToAi }: Prop
               <button onClick={() => setPickerOpen(false)}>收起取色器</button>
             </div>
           )}
-          <div className="palette-row">
-            {palette.map((color) => (
-              <button key={color} className="swatch" style={{ background: color }} onClick={() => chooseColor(color)} title={color} />
-            ))}
-          </div>
           <button
             className="primary recolor-to-ai"
             disabled={!uploaded || !/^#[0-9a-fA-F]{6}$/.test(targetColor)}

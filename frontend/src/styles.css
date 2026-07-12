@@ -380,18 +380,6 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
-.palette-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(72px, 1fr));
-  gap: 10px;
-}
-
-.swatch {
-  border-radius: 6px;
-  min-height: 58px;
-  padding: 0;
-}
-
 .recolor-help {
   color: #665f55;
   font-size: 13px;
