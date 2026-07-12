@@ -247,11 +247,29 @@ export default function Generate({
       image_size: imageSize,
       params: { ...mergedParams, ...extraParams }
     });
-    setResult(data.job);
-    setResultJobs((items) => (append ? [...items, data.job] : [data.job]));
-    const firstImage = data.job?.results?.[0] || null;
+    let completedJob = data.job;
+    setResult(completedJob);
+    setResultJobs((items) => (append ? [...items, completedJob] : [completedJob]));
+    if (completedJob?.status === "running") {
+      completedJob = await waitForJob(completedJob.job_id);
+      setResult(completedJob);
+      setResultJobs((items) => items.map((job) => (job.job_id === completedJob.job_id ? completedJob : job)));
+    }
+    const firstImage = completedJob?.results?.[0] || null;
     setSelectedResult(firstImage);
-    return data;
+    return { ...data, status: completedJob?.status, job: completedJob };
+  }
+
+  async function waitForJob(jobId: number) {
+    const started = Date.now();
+    while (Date.now() - started < 12 * 60 * 1000) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      const job = await api.getJob(jobId);
+      setResult(job);
+      setResultJobs((items) => items.map((item) => (item.job_id === jobId ? job : item)));
+      if (["success", "failed", "unknown"].includes(job.status)) return job;
+    }
+    throw new Error(`任务 ${jobId} 仍在后台生成，请稍后到历史记录查看，系统不会重复提交。`);
   }
 
   async function generate() {

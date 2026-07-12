@@ -5,6 +5,35 @@ from typing import Any
 from ..database import db_session, now_iso
 from .file_service import public_url_for
 
+MAX_HISTORY_JOBS = 20
+
+
+def prune_job_history(max_jobs: int = MAX_HISTORY_JOBS) -> int:
+    image_paths: list[str] = []
+    with db_session() as conn:
+        stale_jobs = conn.execute(
+            """
+            SELECT id FROM image_jobs
+            WHERE status != 'running'
+            ORDER BY id DESC
+            LIMIT -1 OFFSET ?
+            """,
+            (max_jobs,),
+        ).fetchall()
+        if not stale_jobs:
+            return 0
+        stale_ids = [int(row["id"]) for row in stale_jobs]
+        placeholders = ",".join("?" for _ in stale_ids)
+        images = conn.execute(
+            f"SELECT image_path FROM generated_images WHERE job_id IN ({placeholders})",
+            stale_ids,
+        ).fetchall()
+        image_paths = [row["image_path"] for row in images if row["image_path"]]
+        conn.execute(f"DELETE FROM image_jobs WHERE id IN ({placeholders})", stale_ids)
+    for image_path in image_paths:
+        Path(image_path).unlink(missing_ok=True)
+    return len(stale_ids)
+
 
 def create_job(payload: dict[str, Any], upload_row, config: dict[str, Any]) -> int:
     ts = now_iso()
@@ -50,7 +79,9 @@ def create_job(payload: dict[str, Any], upload_row, config: dict[str, Any]) -> i
                 ts,
             ),
         )
-        return int(cursor.lastrowid)
+        job_id = int(cursor.lastrowid)
+    prune_job_history()
+    return job_id
 
 
 def set_job_status(job_id: int, status: str, error_message: str | None = None, response_json: Any = None) -> None:
@@ -69,6 +100,8 @@ def set_job_status(job_id: int, status: str, error_message: str | None = None, r
                 job_id,
             ),
         )
+    if status in {"success", "failed", "unknown"}:
+        prune_job_history()
 
 
 def add_generated_image(job_id: int, image_path: str, source_type: str) -> None:
@@ -140,7 +173,8 @@ def create_local_recolor_job(upload_row, target_color: str, result_path: str) ->
             """,
             (job_id, result_path, public_url_for(result_path), ts),
         )
-        return job_id
+    prune_job_history()
+    return job_id
 
 
 def get_upload(uploaded_image_id: int):

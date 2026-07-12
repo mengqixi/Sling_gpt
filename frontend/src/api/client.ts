@@ -41,6 +41,7 @@ export const api = {
   applyRecolor: (payload: any) => request<any>("/api/recolor/apply", { method: "POST", body: JSON.stringify(payload) }),
   reuseRecolor: (payload: any) => request<any>("/api/recolor/reuse", { method: "POST", body: JSON.stringify(payload) }),
   generate: (payload: any) => request<any>("/api/generate", { method: "POST", body: JSON.stringify(payload) }),
+  getJob: (id: number) => request<any>(`/api/jobs/${id}`),
   reuseGeneratedImage: (id: number) => request<any>(`/api/generated-images/${id}/reuse`, { method: "POST" }),
   splitGeneratedImage: (id: number) => request<any>(`/api/generated-images/${id}/split-grid`, { method: "POST" }),
   cropGeneratedImage: (id: number, payload: { left: number; top: number; right: number; bottom: number }) =>

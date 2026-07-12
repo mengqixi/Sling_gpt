@@ -1,6 +1,6 @@
 from time import perf_counter
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from ..services.api_config_service import get_config
@@ -39,8 +39,51 @@ class CropPayload(BaseModel):
     bottom: float
 
 
+def _response_preview(value):
+    if isinstance(value, dict):
+        return {key: _response_preview(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_response_preview(item) for item in value]
+    if isinstance(value, str) and len(value) > 2000:
+        kind = "data_url" if value.startswith("data:image/") else "long_text"
+        return f"[{kind} omitted, {len(value)} chars]"
+    return value
+
+
+def _run_generation(job_id: int, payload: dict, image_paths: list[str], config: dict):
+    started = perf_counter()
+    try:
+        response_json = call_relay_image_api(
+            config,
+            image_paths,
+            payload["final_prompt"],
+            payload.get("output_count"),
+            payload.get("image_size") or "1024x1024",
+            payload.get("quality"),
+        )
+        saved_images = save_images_from_response(response_json, config, job_id)
+        auto_split = bool((payload.get("params") or {}).get("auto_split_grid", False))
+        if auto_split and len(saved_images) == 1:
+            try:
+                split_paths = split_image_grid(saved_images[0]["path"], job_id)
+                for path in split_paths:
+                    add_generated_image(job_id, path, "split_grid")
+            except Exception:
+                add_generated_image(job_id, saved_images[0]["path"], saved_images[0]["source_type"])
+        else:
+            for item in saved_images:
+                add_generated_image(job_id, item["path"], item["source_type"])
+        set_job_status(job_id, "success", response_json=_response_preview(response_json))
+    except RelayGatewayTimeoutError as exc:
+        elapsed = round(perf_counter() - started, 1)
+        set_job_status(job_id, "unknown", error_message=f"{exc}（本次请求耗时 {elapsed} 秒）")
+    except Exception as exc:
+        elapsed = round(perf_counter() - started, 1)
+        set_job_status(job_id, "failed", error_message=f"{exc}（本次请求耗时 {elapsed} 秒）")
+
+
 @router.post("/generate")
-def generate(payload: GeneratePayload):
+def generate(payload: GeneratePayload, background_tasks: BackgroundTasks):
     upload_ids = payload.uploaded_image_ids or ([payload.uploaded_image_id] if payload.uploaded_image_id else [])
     upload_ids = [image_id for image_id in upload_ids if image_id]
     if not upload_ids:
@@ -62,35 +105,13 @@ def generate(payload: GeneratePayload):
 
     job_id = create_job(payload.model_dump(), upload, config)
     set_job_status(job_id, "running")
-    started = perf_counter()
-    try:
-        response_json = call_relay_image_api(
-            config,
-            [item["file_path"] for item in uploads],
-            payload.final_prompt,
-            payload.output_count,
-            payload.image_size,
-            payload.quality,
-        )
-        saved_images = save_images_from_response(response_json, config, job_id)
-        auto_split = bool((payload.params or {}).get("auto_split_grid", False))
-        if auto_split and len(saved_images) == 1:
-            try:
-                split_paths = split_image_grid(saved_images[0]["path"], job_id)
-                for path in split_paths:
-                    add_generated_image(job_id, path, "split_grid")
-            except Exception:
-                add_generated_image(job_id, saved_images[0]["path"], saved_images[0]["source_type"])
-        else:
-            for item in saved_images:
-                add_generated_image(job_id, item["path"], item["source_type"])
-        set_job_status(job_id, "success", response_json=response_json)
-    except RelayGatewayTimeoutError as exc:
-        elapsed = round(perf_counter() - started, 1)
-        set_job_status(job_id, "unknown", error_message=f"{exc}（本次请求耗时 {elapsed} 秒）")
-    except Exception as exc:
-        elapsed = round(perf_counter() - started, 1)
-        set_job_status(job_id, "failed", error_message=f"{exc}（本次请求耗时 {elapsed} 秒）")
+    background_tasks.add_task(
+        _run_generation,
+        job_id,
+        payload.model_dump(),
+        [item["file_path"] for item in uploads],
+        config,
+    )
     job = get_job(job_id)
     return {"job_id": job_id, "status": job["status"], "job": job}
 
