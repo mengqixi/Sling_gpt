@@ -70,9 +70,9 @@ function App() {
             }}
           />
         )}
-        {page === "generate" && (
+        <div style={{ display: page === "generate" ? "block" : "none" }}>
           <Generate initialIntent={generateIntent} onIntentConsumed={() => setGenerateIntent(null)} />
-        )}
+        </div>
         {page === "ecommerce" && <Ecommerce />}
         {page === "prompts" && <PromptTemplates />}
         {page === "api" && <ApiConfigs />}

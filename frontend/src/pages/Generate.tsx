@@ -65,7 +65,7 @@ export default function Generate({
   const [params, setParams] = useState(defaultParams);
   const [sizeMode, setSizeMode] = useState("2048x2048");
   const [customImageSize, setCustomImageSize] = useState("2048x2048");
-  const [colorScope, setColorScope] = useState("partial");
+  const [colorScope, setColorScope] = useState("all");
   const [selectedParts, setSelectedParts] = useState<string[]>(["包身"]);
   const [colorNote, setColorNote] = useState("");
   const [finalPrompt, setFinalPrompt] = useState("");
@@ -94,7 +94,10 @@ export default function Generate({
     if (!initialIntent) return;
 
     setUploadedImages(initialIntent.images || []);
-    if (initialIntent.taskType) setTaskType(initialIntent.taskType);
+    if (initialIntent.taskType) {
+      setTaskType(initialIntent.taskType);
+      if (initialIntent.taskType === "color_change") setColorScope("all");
+    }
     if (initialIntent.targetColor) {
       setParams((current) => ({ ...current, target_color: initialIntent.targetColor || "" }));
     }
@@ -142,6 +145,10 @@ export default function Generate({
 
   useEffect(() => {
     reload();
+  }, [taskType]);
+
+  useEffect(() => {
+    if (taskType === "color_change") setColorScope("all");
   }, [taskType]);
 
   async function reload() {
@@ -671,6 +678,8 @@ export default function Generate({
             {resultJobs.map((job, jobIndex) => (
               <article className="result-job" key={job.job_id || jobIndex}>
                 <h3>{jobIndex === 0 ? "生成结果" : `继续修改 ${jobIndex}`}</h3>
+                <div className={`status ${job.status}`}>{statusLabel(job.status)} · 任务 {job.job_id}</div>
+                {job.error_message && <div className="notice">{job.error_message}</div>}
                 <div className="result-grid">
                   {job?.results?.map((image: any, index: number) => (
                     <figure key={image.id} className={selectedResult?.id === image.id ? "selected-result" : ""}>
