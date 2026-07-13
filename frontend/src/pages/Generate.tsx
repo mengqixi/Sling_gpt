@@ -87,6 +87,7 @@ export default function Generate({
   const cropStartRef = useRef<{ x: number; y: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const [copyMessage, setCopyMessage] = useState("");
 
   const imageSize = sizeMode === "custom" ? customImageSize : sizeMode;
   const uploaded = uploadedImages[0] || null;
@@ -332,7 +333,8 @@ export default function Generate({
 
   async function copyFinalPrompt() {
     const copied = await copyText(finalPrompt);
-    setMessage(copied ? "提示词已复制" : "提示词为空或复制失败，请先选择功能类型并生成提示词");
+    setCopyMessage(copied ? "提示词已复制" : "复制失败，请手动选择提示词复制");
+    window.setTimeout(() => setCopyMessage(""), 2500);
   }
 
   function togglePart(part: string) {
@@ -637,9 +639,12 @@ export default function Generate({
         <section className="panel prompt-panel">
           <div className="panel-title-row">
             <h2>最终提示词</h2>
-            <button className="icon-button" onClick={copyFinalPrompt} title="复制提示词" disabled={!finalPrompt.trim()}>
-              <Copy size={17} />
-            </button>
+            <div className="copy-action">
+              {copyMessage && <span className="copy-feedback">{copyMessage}</span>}
+              <button className="icon-button" onClick={copyFinalPrompt} title="复制提示词" disabled={!finalPrompt.trim()}>
+                <Copy size={17} />
+              </button>
+            </div>
           </div>
           {!taskType && <div className="empty-state">选择左侧功能类型后，这里会显示对应的最终提示词。</div>}
           {taskType && <><label>模板选择</label>

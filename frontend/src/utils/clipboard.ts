@@ -16,9 +16,15 @@ export async function copyText(text: string): Promise<boolean> {
   textarea.style.left = "-9999px";
   textarea.style.opacity = "0";
   document.body.appendChild(textarea);
+  textarea.focus({ preventScroll: true });
   textarea.select();
   textarea.setSelectionRange(0, textarea.value.length);
-  const copied = document.execCommand("copy");
-  document.body.removeChild(textarea);
-  return copied;
+  try {
+    document.execCommand("copy");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(textarea);
+  }
 }

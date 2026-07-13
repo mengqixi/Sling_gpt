@@ -571,6 +571,19 @@ main {
   padding: 8px;
 }
 
+.copy-action {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.copy-feedback {
+  color: #1f6b47;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .preview-block {
   background: #f2f5f3;
   border-radius: 8px;
