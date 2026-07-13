@@ -85,12 +85,15 @@ export default function Ecommerce() {
       const data = await api.planEcommerceCampaign({ ...form, template_ids: selected, sizes });
       setPlan(data);
       setEditedPrompts(Object.fromEntries(data.items.map((item: any) => [item.template_id, item.final_prompt])));
+      setJobs({});
       setConfirmed(false);
       document.getElementById("ecommerce-plan")?.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (error: any) {
       setMessage(error.message);
     }
   }
+
+  const completedCount = plan?.items.filter((item: any) => jobs[item.template_id]?.status === "success").length || 0;
 
   async function generateBatch() {
     if (!confirmed) return setMessage("请先确认提示词和调用次数");
@@ -117,7 +120,12 @@ export default function Ecommerce() {
         nextJobs[item.template_id] = data.job;
         setJobs({ ...nextJobs });
         if (data.job?.status !== "success") {
-          setMessage(data.job?.status === "unknown" ? "本次结果未知，批量任务已暂停，避免继续扣费。" : `“${item.name}”生成失败，批量任务已暂停。`);
+          const reason = data.job?.error_message ? `原因：${data.job.error_message}` : "中转站没有返回可用图片。";
+          setMessage(
+            data.job?.status === "unknown"
+              ? `“${item.name}”结果未知，批量任务已暂停，避免继续扣费。${reason}`
+              : `“${item.name}”生成失败，批量任务已暂停。${reason}`
+          );
           break;
         }
       }
@@ -202,7 +210,7 @@ export default function Ecommerce() {
             {job?.results?.length > 0 && <div className="ecom-results">{job.results.map((image: any) => <div key={image.id}><img src={image.image_url} alt={item.name} /><div><button onClick={() => setPreview(image.image_url)}><Eye size={16} />预览</button><a className="button-link" href={image.image_url} download><Download size={16} />下载</a></div></div>)}</div>}
           </article>;
         })}</div>
-        <div className="batch-confirm"><label><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />我已检查 {plan.count} 张提示词，确认将调用 API {plan.count} 次</label><button className="primary" disabled={busy || !confirmed} onClick={generateBatch}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />}{busy ? progress : "确认并开始批量生成"}</button></div>
+        <div className="batch-confirm"><label><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />我已检查 {plan.count} 张提示词，确认将调用 API {plan.count} 次{completedCount > 0 && `（已成功 ${completedCount} 张，将自动跳过）`}</label><button className="primary" disabled={busy || !confirmed} onClick={generateBatch}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />}{busy ? progress : completedCount > 0 ? "从失败处继续生成" : "确认并开始批量生成"}</button></div>
       </section>}
 
       {message && <div className="alert warning"><Pause size={18} />{message}</div>}
