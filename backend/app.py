@@ -1,3 +1,5 @@
+import mimetypes
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -7,6 +9,11 @@ from .database import init_db
 from .routers import api_configs, ecommerce, generate, history, prompts, recolor, upload
 from .seed_prompts import seed_prompt_templates
 
+
+mimetypes.add_type("image/webp", ".webp")
+mimetypes.add_type("image/jpeg", ".jpg")
+mimetypes.add_type("image/jpeg", ".jpeg")
+mimetypes.add_type("image/png", ".png")
 
 app = FastAPI(title="Bag Relay Image Tool")
 
