@@ -63,7 +63,8 @@ def seed_prompt_templates() -> None:
                 old_content = row["template_content"] or ""
                 is_legacy_color = item["task_type"] == "color_change" and "请一次生成至少 4 张不同角度" in old_content
                 is_legacy_material = item["task_type"] == "material_replace" and "材质近景细节图" in old_content
-                if is_legacy_color or is_legacy_material:
+                is_legacy_model = item["task_type"] == "model_showcase" and "【包袋与服装反差规则】" not in old_content
+                if is_legacy_color or is_legacy_material or is_legacy_model:
                     conn.execute(
                         "UPDATE prompt_templates SET template_content = ?, updated_at = ? WHERE id = ?",
                         (content, ts, existing["id"]),
