@@ -247,9 +247,9 @@ export default function VipOrganizer() {
 
   async function analyzeWithApi() {
     if (!products.length) return setMessage("请先上传商品原图");
-    if (!analysisConfigId) return setMessage("请先在 API 设置中新增并启用文本分析 API");
+    if (!analysisConfigId) return setMessage("请先在 API 设置中新增并启用图文分析 API");
     setBusy(true);
-    setMessage("正在用所选文本分析 API 分析全部商品图，本次只调用一次……");
+    setMessage("正在用所选图文分析 API 分析全部商品图，本次只调用一次……");
     try {
       const apiResult = await api.analyzeVipOrganizerWithApi({
         session_id: sessionId,
@@ -380,7 +380,7 @@ export default function VipOrganizer() {
     <section className="page organizer-page">
       <header className="page-header">
         <h1>唯品会自动化整理</h1>
-        <p>上传商品原图和模特图，本地生成15张唯品会套图初稿；需要时可手动调用一次文本分析 API。</p>
+        <p>上传商品原图和模特图，本地生成15张唯品会套图初稿；需要时可手动调用一次图文分析 API。</p>
       </header>
 
       <section className="panel organizer-source-panel">
@@ -406,9 +406,9 @@ export default function VipOrganizer() {
             <div><h2>2. 素材分析</h2><p>主类别决定图片用途，细节标签可以多选；低可信度结果建议人工确认或调用一次API。</p></div>
             <div className="button-row">
               <label className="organizer-api-select">
-                <span>分析 API</span>
+                <span>图文分析 API</span>
                 <select value={analysisConfigId} onChange={(event) => setAnalysisConfigId(Number(event.target.value) || "")}>
-                  {!analysisConfigs.length && <option value="">暂无文本分析 API</option>}
+                  {!analysisConfigs.length && <option value="">暂无图文分析 API</option>}
                   {analysisConfigs.map((item) => <option value={item.id} key={item.id}>{item.config_name}{item.is_default ? "（默认）" : ""}</option>)}
                 </select>
               </label>

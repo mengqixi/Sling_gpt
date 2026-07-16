@@ -11,7 +11,7 @@ from backend.services.vip_organizer_service import _analysis_config
 class ApiConfigTypeTests(unittest.TestCase):
     def test_config_type_guard_rejects_wrong_usage(self):
         require_config_type({"api_type": IMAGE_API_TYPE}, IMAGE_API_TYPE)
-        with self.assertRaisesRegex(ValueError, "不能用于文本分析"):
+        with self.assertRaisesRegex(ValueError, "不能用于图文分析"):
             require_config_type({"api_type": IMAGE_API_TYPE}, TEXT_API_TYPE)
 
     def test_generate_rejects_text_analysis_config_before_creating_job(self):
@@ -37,7 +37,7 @@ class ApiConfigTypeTests(unittest.TestCase):
             "backend.services.vip_organizer_service.get_config",
             return_value={"id": 3, "enabled": True, "api_type": IMAGE_API_TYPE},
         ):
-            with self.assertRaisesRegex(ValueError, "不能用于文本分析"):
+            with self.assertRaisesRegex(ValueError, "不能用于图文分析"):
                 _analysis_config(3)
 
 

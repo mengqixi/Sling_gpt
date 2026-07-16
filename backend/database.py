@@ -167,6 +167,13 @@ def init_db() -> None:
             WHERE api_type IS NULL OR api_type NOT IN ('image_generation', 'text_analysis')
             """
         )
+        conn.execute(
+            """
+            UPDATE api_configs
+            SET config_name = '素材分析（图文）'
+            WHERE api_type = 'text_analysis' AND config_name = '素材分析（文本）'
+            """
+        )
 
         legacy_analysis = conn.execute(
             "SELECT api_base_url, api_key, model_name FROM vip_analysis_config WHERE id = 1"
@@ -196,7 +203,7 @@ def init_db() -> None:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        "素材分析（文本）",
+                        "素材分析（图文）",
                         "text_analysis",
                         legacy_analysis["api_base_url"],
                         legacy_analysis["api_key"],

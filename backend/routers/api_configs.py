@@ -84,7 +84,7 @@ def _validate_extra_params(value: str | None) -> None:
 
 def _validate_api_type(value: str | None) -> None:
     if value is not None and value not in VALID_API_TYPES:
-        raise HTTPException(status_code=400, detail="API 用途必须是生图或文本分析")
+        raise HTTPException(status_code=400, detail="API 用途必须是生图或图文分析")
 
 
 @router.get("")

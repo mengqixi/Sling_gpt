@@ -81,9 +81,9 @@ API_ANALYSIS_ROLES = CANONICAL_PRODUCT_ROLES
 def _analysis_config(config_id: int | None = None) -> dict[str, Any]:
     config = get_config(config_id, include_secret=True) if config_id else get_default_config(TEXT_API_TYPE, include_secret=True)
     if not config:
-        raise ValueError("尚未配置可用的文本分析 API，请先在 API 设置中新增")
+        raise ValueError("尚未配置可用的图文分析 API，请先在 API 设置中新增")
     if not config.get("enabled"):
-        raise ValueError("所选文本分析 API 未启用")
+        raise ValueError("所选图文分析 API 未启用")
     require_config_type(config, TEXT_API_TYPE)
     return config
 
@@ -121,7 +121,7 @@ def save_analysis_config(api_base_url: str, api_key: str, model_name: str) -> di
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    "素材分析（文本）", TEXT_API_TYPE, base_url, key, model,
+                    "素材分析（图文）", TEXT_API_TYPE, base_url, key, model,
                     "/chat/completions", "application/json", "choices.0.message.content",
                     350, 1, 1, ts, ts,
                 ),
@@ -201,17 +201,17 @@ def analyze_assets_with_api(session_id: str, product_image_ids: list[int], api_c
     base_url = (config.get("api_base_url") or "").strip()
     endpoint_path = (config.get("endpoint_path") or "").strip()
     if not base_url or not endpoint_path:
-        raise ValueError("文本分析 API 的 Base URL 或接口路径为空")
+        raise ValueError("图文分析 API 的 Base URL 或接口路径为空")
     if (config.get("method") or "POST").upper() != "POST":
-        raise ValueError("文本分析 API 当前仅支持 POST 请求")
+        raise ValueError("图文分析 API 当前仅支持 POST 请求")
     if (config.get("request_content_type") or "application/json").lower() != "application/json":
-        raise ValueError("文本分析 API 必须使用 application/json 请求格式")
+        raise ValueError("图文分析 API 必须使用 application/json 请求格式")
     headers = {"Content-Type": "application/json"}
     auth_type = (config.get("auth_type") or "bearer").lower()
     api_key = config.get("api_key") or ""
     if auth_type != "none":
         if not api_key:
-            raise ValueError("所选文本分析 API 尚未配置 API Key")
+            raise ValueError("所选图文分析 API 尚未配置 API Key")
         header_name = config.get("auth_header_name") or "Authorization"
         if auth_type == "bearer":
             prefix = config.get("auth_header_prefix") or "Bearer"
@@ -219,13 +219,13 @@ def analyze_assets_with_api(session_id: str, product_image_ids: list[int], api_c
         elif auth_type == "raw":
             headers[header_name] = api_key
         else:
-            raise ValueError("文本分析 API 的认证方式无效")
+            raise ValueError("图文分析 API 的认证方式无效")
     try:
         request_payload = json.loads(config.get("extra_params_json") or "{}")
     except json.JSONDecodeError as exc:
-        raise ValueError("文本分析 API 的额外参数 JSON 格式错误") from exc
+        raise ValueError("图文分析 API 的额外参数 JSON 格式错误") from exc
     if not isinstance(request_payload, dict):
-        raise ValueError("文本分析 API 的额外参数 JSON 必须是对象")
+        raise ValueError("图文分析 API 的额外参数 JSON 必须是对象")
     request_payload.update({
         config.get("model_field_name") or "model": config.get("model_name") or "",
         "messages": [{"role": "user", "content": content}],

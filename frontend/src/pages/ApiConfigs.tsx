@@ -36,7 +36,7 @@ const imageDefaults = {
 
 const textDefaults = {
   ...sharedDefaults,
-  config_name: "新文本分析配置",
+  config_name: "新图文分析配置",
   api_type: "text_analysis",
   api_base_url: "https://n.tokeness.io/v1",
   model_name: "gpt-5.6-sol",
@@ -52,7 +52,7 @@ const textDefaults = {
 };
 
 function typeLabel(type: string) {
-  return type === "text_analysis" ? "文本分析 API" : "生图 API";
+  return type === "text_analysis" ? "图文分析 API" : "生图 API";
 }
 
 export default function ApiConfigs() {
@@ -120,18 +120,18 @@ export default function ApiConfigs() {
     <div className="page">
       <header className="page-header">
         <h1>API 设置</h1>
-        <p>生图 API 仅供 AI 生图和电商生图使用；文本分析 API 仅供自动化整理分析素材。密钥只显示掩码。</p>
+        <p>生图 API 仅供 AI 生图和电商生图使用；图文分析 API 仅供自动化整理分析素材。密钥只显示掩码。</p>
       </header>
       <div className="manage-layout">
         <section className="panel list-panel">
           <div className="panel-title-row"><h2>配置列表</h2></div>
           <div className="api-add-buttons">
             <button onClick={() => setSelected({ ...imageDefaults })}><Plus size={16} />新增生图</button>
-            <button onClick={() => setSelected({ ...textDefaults })}><Plus size={16} />新增文本</button>
+            <button onClick={() => setSelected({ ...textDefaults })}><Plus size={16} />新增图文</button>
           </div>
           <div className="template-list">
             {renderGroup("生图 API", "image_generation", <Image size={16} />)}
-            {renderGroup("文本分析 API", "text_analysis", <MessageSquareText size={16} />)}
+            {renderGroup("图文分析 API", "text_analysis", <MessageSquareText size={16} />)}
           </div>
         </section>
         <section className="panel editor-panel">
@@ -147,7 +147,7 @@ export default function ApiConfigs() {
             {message && <div className="notice">{message}</div>}
             <div className="form-grid">
               <Input label="配置名称" value={selected.config_name || ""} onChange={(v) => update("config_name", v)} />
-              <label className="field"><span>API 用途</span><select value={selected.api_type || "image_generation"} onChange={(event) => update("api_type", event.target.value)}><option value="image_generation">生图 API</option><option value="text_analysis">文本分析 API</option></select></label>
+              <label className="field"><span>API 用途</span><select value={selected.api_type || "image_generation"} onChange={(event) => update("api_type", event.target.value)}><option value="image_generation">生图 API</option><option value="text_analysis">图文分析 API</option></select></label>
               <Input label="API Base URL" value={selected.api_base_url || ""} onChange={(v) => update("api_base_url", v)} />
               <Input label="API Key" type="password" placeholder={selected.api_key_masked || "输入后保存"} value={selected.api_key || ""} onChange={(v) => update("api_key", v)} />
               <Input label="模型名称" value={selected.model_name || ""} onChange={(v) => update("model_name", v)} />

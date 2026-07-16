@@ -91,6 +91,6 @@ def get_default_config(api_type: str, include_secret: bool = True) -> dict[str, 
 def require_config_type(config: dict[str, Any], expected_type: str) -> None:
     actual_type = config.get("api_type") or IMAGE_API_TYPE
     if actual_type != expected_type:
-        expected_label = "生图" if expected_type == IMAGE_API_TYPE else "文本分析"
-        actual_label = "生图" if actual_type == IMAGE_API_TYPE else "文本分析"
+        expected_label = "生图" if expected_type == IMAGE_API_TYPE else "图文分析"
+        actual_label = "生图" if actual_type == IMAGE_API_TYPE else "图文分析"
         raise ValueError(f"当前选择的是{actual_label} API，不能用于{expected_label}")
