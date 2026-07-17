@@ -13,6 +13,7 @@ import zipfile
 from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import cv2
@@ -33,6 +34,8 @@ ORGANIZER_RESULT_DIR = ORGANIZER_DATA_DIR / "results"
 UPLOAD_COPY_BUFFER_SIZE = 1024 * 1024
 ORGANIZER_SESSION_TTL_HOURS = 24
 BUNDLED_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "NotoSansSC-VF-GB2312.ttf"
+_PREVIEW_LOCKS_GUARD = Lock()
+_PREVIEW_LOCKS: dict[str, Lock] = {}
 
 
 SLOT_DEFINITIONS = [
@@ -736,6 +739,8 @@ def delete_session(session_id: str) -> None:
             pass
     shutil.rmtree(_session_upload_dir(session_id), ignore_errors=True)
     shutil.rmtree(_session_result_dir(session_id), ignore_errors=True)
+    with _PREVIEW_LOCKS_GUARD:
+        _PREVIEW_LOCKS.pop(session_id, None)
 
 
 def _cleanup_expired_sessions() -> None:
@@ -1059,15 +1064,6 @@ def analyze_assets(
         interior_candidates or [item for item in detail_views if item["id"] != logo_view["id"]] or [logo_view],
         key=lambda item: (effective_role(item) == "detail", item["foreground_fill_ratio"], item["bbox_ratio"]),
     )
-    secondary_candidates = [
-        item for item in detail_views
-        if item["id"] not in {logo_view["id"], interior_view["id"]}
-        and any(tag in effective_tags(item) for tag in {"inner_pocket_label", "zipper_opening", "material_texture"})
-    ]
-    secondary_detail = max(
-        secondary_candidates or [item for item in detail_views if item["id"] not in {logo_view["id"], interior_view["id"]}] or [interior_view],
-        key=lambda item: ("inner_pocket_label" in effective_tags(item), item["bbox_ratio"], item["sharpness"]),
-    )
     logo_id = logo_view["id"]
     interior_id = interior_view["id"]
 
@@ -1087,7 +1083,7 @@ def analyze_assets(
         "601.jpg": (model_pick(0), 90 if models else 0, "模特图自动留白排版"),
         "602.jpg": (model_pick(1), 90 if models else 0, "模特图自动留白排版"),
         "603.jpg": (model_pick(2), 90 if models else 0, "模特图自动留白排版"),
-        "604.jpg": ([secondary_detail["id"]], selection_confidence(secondary_detail, tag="inner_pocket_label"), "优先使用另一张内里、拉链开口或结构细节"),
+        "604.jpg": ([interior_id], selection_confidence(interior_view, tag="interior"), "与15.jpg使用同一张已确认的内里或结构细节图，并套用详情模板"),
         "605.jpg": ([logo_id], selection_confidence(logo_view, tag="logo"), "复用ELLE Logo清晰近景候选"),
         "606.jpg": ([front_view["id"], angle_view["id"], back_id, top_id], min(
             selection_confidence(front_view, role="front"),
@@ -1345,14 +1341,17 @@ def _model_showcase_page(source: Image.Image) -> Image.Image:
 
 
 def _detail_showcase_page(source: Image.Image) -> Image.Image:
-    """Match the 604-605 reference: title, white border and a large detail crop."""
+    """Match the 604-605 reference without changing the uploaded detail image."""
     canvas = Image.new("RGB", (750, 750), "white")
     draw = ImageDraw.Draw(canvas)
     title = "细节展示"
     title_font = _font(34, True)
     title_box = draw.textbbox((0, 0), title, font=title_font)
     draw.text(((750 - (title_box[2] - title_box[0])) / 2, 70), title, font=title_font, fill="#aaaaaa")
-    _paste_product(canvas, source, (55, 181, 695, 703))
+    detail = ImageOps.contain(source.convert("RGB"), (640, 522), Image.Resampling.LANCZOS)
+    detail_x = 55 + (640 - detail.width) // 2
+    detail_y = 181 + (522 - detail.height) // 2
+    canvas.paste(detail, (detail_x, detail_y))
     return canvas
 
 
@@ -1423,6 +1422,8 @@ def _render_slot_image(file_name: str, image_ids: list[int], product_info: dict[
         return _normalized_product_page(source, transparent=True)
     if file_name == "50.jpg":
         return _fit(source, (950, 1200))
+    if file_name in {"4.jpg", "15.jpg"}:
+        return _fit(source, (800, 800), contain=True)
     if file_name in {"601.jpg", "602.jpg", "603.jpg"}:
         return _model_showcase_page(source)
     if file_name in {"604.jpg", "605.jpg"}:
@@ -1441,11 +1442,26 @@ def _save_slot_image(image: Image.Image, file_name: str, output: Path) -> None:
         elif size > 600_000:
             image.quantize(colors=256).save(output, optimize=True)
         return
-    quality = 94 if file_name in {"1.jpg", "50.jpg", "601.jpg", "602.jpg", "603.jpg", "604.jpg", "605.jpg", "801.jpg"} else 98
+    if file_name in {"4.jpg", "15.jpg", "604.jpg", "605.jpg"}:
+        quality = 100
+    elif file_name in {"1.jpg", "50.jpg", "601.jpg", "602.jpg", "603.jpg", "801.jpg"}:
+        quality = 94
+    else:
+        quality = 98
     image.convert("RGB").save(output, quality=quality, subsampling=0)
 
 
+def _preview_lock(session_id: str) -> Lock:
+    with _PREVIEW_LOCKS_GUARD:
+        return _PREVIEW_LOCKS.setdefault(session_id, Lock())
+
+
 def render_previews(session_id: str, slots: list[dict[str, Any]], product_info: dict[str, str]) -> dict[str, Any]:
+    with _preview_lock(session_id):
+        return _render_previews(session_id, slots, product_info)
+
+
+def _render_previews(session_id: str, slots: list[dict[str, Any]], product_info: dict[str, str]) -> dict[str, Any]:
     slot_map = _slot_map(slots)
     _validate_slot_map(session_id, slot_map)
     preview_id = uuid.uuid4().hex[:12]

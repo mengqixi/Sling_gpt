@@ -275,6 +275,35 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         self.assertEqual(square_model.getpixel((20, 20)), (181, 34, 38))
         self.assertEqual(product.getpixel((20, 20)), (255, 255, 255))
 
+    def test_detail_slots_keep_the_uploaded_detail_frame(self):
+        source = Image.new("RGB", (320, 480), "#b52226")
+        with patch("backend.services.vip_organizer_service._load_image", return_value=source):
+            logo_detail = _render_slot_image("4.jpg", [11], {})
+            interior_detail = _render_slot_image("15.jpg", [12], {})
+            detail_showcase = _render_slot_image("604.jpg", [12], {})
+            hardware_showcase = _render_slot_image("605.jpg", [11], {})
+
+        self.assertIsNotNone(logo_detail)
+        self.assertIsNotNone(interior_detail)
+        self.assertIsNotNone(detail_showcase)
+        self.assertIsNotNone(hardware_showcase)
+        assert (
+            logo_detail is not None
+            and interior_detail is not None
+            and detail_showcase is not None
+            and hardware_showcase is not None
+        )
+        self.assertEqual(logo_detail.size, (800, 800))
+        self.assertEqual(interior_detail.size, (800, 800))
+        self.assertEqual(logo_detail.getpixel((20, 400)), (255, 255, 255))
+        self.assertEqual(logo_detail.getpixel((400, 400)), (181, 34, 38))
+        self.assertEqual(interior_detail.getpixel((780, 400)), (255, 255, 255))
+        self.assertEqual(interior_detail.getpixel((400, 400)), (181, 34, 38))
+        self.assertEqual(detail_showcase.size, (750, 750))
+        self.assertEqual(hardware_showcase.size, (750, 750))
+        self.assertEqual(detail_showcase.getpixel((375, 400)), (181, 34, 38))
+        self.assertEqual(hardware_showcase.getpixel((375, 400)), (181, 34, 38))
+
     def test_slot_map_links_the_two_model_output_sizes(self):
         mapped = _slot_map([
             {"file_name": "1.jpg", "image_ids": [7]},

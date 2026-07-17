@@ -1,4 +1,4 @@
-import { CheckCircle2, Download, Eye, FileImage, LoaderCircle, RefreshCw, UploadCloud } from "lucide-react";
+import { CheckCircle2, Download, FileImage, LoaderCircle, RefreshCw, UploadCloud, X } from "lucide-react";
 import type { DragEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
@@ -144,6 +144,7 @@ export default function VipOrganizer() {
   const [slotPreviews, setSlotPreviews] = useState<Record<string, string>>({});
   const [previewBusy, setPreviewBusy] = useState(false);
   const previewRequestRef = useRef(0);
+  const previewQueueRef = useRef<Promise<void>>(Promise.resolve());
   const [preview, setPreview] = useState<string | null>(null);
   const [info, setInfo] = useState({
     product_name: "ELLE箱包",
@@ -173,19 +174,38 @@ export default function VipOrganizer() {
     }
     const requestId = ++previewRequestRef.current;
     const timer = window.setTimeout(() => {
-      setPreviewBusy(true);
-      api.previewVipOrganizer({
+      const payload = {
         session_id: sessionId,
         slots,
         product_info: organizerProductInfo()
-      }).then((result) => {
-        if (requestId === previewRequestRef.current) setSlotPreviews(result.previews || {});
-      }).catch((error: any) => {
-        if (requestId === previewRequestRef.current) setMessage(`成品预览更新失败：${error.message}`);
+      };
+      const queued = previewQueueRef.current.catch(() => undefined).then(async () => {
+        if (requestId !== previewRequestRef.current) return;
+        setPreviewBusy(true);
+        let lastError: any = null;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            const result = await api.previewVipOrganizer(payload);
+            if (requestId === previewRequestRef.current) {
+              setSlotPreviews(result.previews || {});
+              setMessage("");
+            }
+            return;
+          } catch (error: any) {
+            lastError = error;
+            if (attempt === 0 && requestId === previewRequestRef.current) {
+              await new Promise((resolve) => window.setTimeout(resolve, 500));
+            }
+          }
+        }
+        if (requestId === previewRequestRef.current) {
+          setMessage(`成品预览暂时未更新，已保留上一次预览：${lastError?.message || "请求失败"}`);
+        }
       }).finally(() => {
         if (requestId === previewRequestRef.current) setPreviewBusy(false);
       });
-    }, 320);
+      previewQueueRef.current = queued;
+    }, 520);
     return () => window.clearTimeout(timer);
   }, [sessionId, slots, info]);
 
@@ -594,7 +614,7 @@ export default function VipOrganizer() {
               const count = slot.file_name === "606.jpg" ? 4 : 1;
               const editableSource = slot.kind !== "generated" || slot.file_name === "401.jpg";
               const renderedPreview = slotPreviews[slot.file_name];
-              return <article className="organizer-slot" key={slot.file_name}>
+              return <article className={`organizer-slot${slot.file_name === "606.jpg" ? " is-composite" : ""}`} key={slot.file_name}>
                 <div className="organizer-slot-preview">
                   {renderedPreview
                     ? <button type="button" onClick={() => setPreview(renderedPreview)} aria-label={`预览 ${slot.file_name} 最终成品`}><img src={renderedPreview} alt={`${slot.file_name} 最终成品`} /></button>
@@ -603,14 +623,12 @@ export default function VipOrganizer() {
                 <div className="organizer-slot-body">
                   <div className="organizer-slot-title"><strong>{slot.file_name}</strong><span>{slot.title}</span><small>{slot.size}</small></div>
                   {editableSource && Array.from({ length: count }).map((_, index) => {
-                    const source = selectedAsset(slot.image_ids[index]);
                     return <label key={index}>{count > 1 ? `来源 ${index + 1}` : "来源图片"}
                       <span className="organizer-source-picker">
                         <select value={slot.image_ids[index] || ""} onChange={(event) => updateSlot(slot.file_name, index, Number(event.target.value))}>
                           <option value="">请选择</option>
                           {optionsFor(slot).map((asset: any) => <option value={asset.id} key={asset.id}>{assetOptionLabel(asset, slot.kind)}</option>)}
                         </select>
-                        <button type="button" disabled={!source} onClick={() => source && setPreview(source.original_url || source.preview_url)} title="预览当前源图" aria-label="预览当前源图"><Eye size={17} /></button>
                       </span>
                     </label>;
                   })}
@@ -629,7 +647,10 @@ export default function VipOrganizer() {
       </>}
 
       {message && <div className="alert warning">{message}</div>}
-      {preview && <div className="image-modal" onClick={() => setPreview(null)}><button onClick={() => setPreview(null)}>关闭</button><img src={preview} alt="图片预览" onClick={(event) => event.stopPropagation()} /></div>}
+      {preview && <div className="image-modal" role="dialog" aria-modal="true" aria-label="成品图片预览" onClick={() => setPreview(null)}>
+        <button className="image-modal-close" type="button" onClick={() => setPreview(null)} aria-label="关闭预览"><X size={22} /></button>
+        <img src={preview} alt="图片预览" onClick={(event) => event.stopPropagation()} />
+      </div>}
     </section>
   );
 }
