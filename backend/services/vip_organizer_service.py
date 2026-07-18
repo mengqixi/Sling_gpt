@@ -34,6 +34,7 @@ ORGANIZER_RESULT_DIR = ORGANIZER_DATA_DIR / "results"
 UPLOAD_COPY_BUFFER_SIZE = 1024 * 1024
 ORGANIZER_SESSION_TTL_HOURS = 24
 BUNDLED_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "NotoSansSC-VF-GB2312.ttf"
+JD_LOGO_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "LibreBodoni-VariableFont_wght.ttf"
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
 
@@ -195,6 +196,11 @@ def _api_analysis_prompt() -> str:
         f"主类别只能从以下固定角色中选择：{role_text}。每张图片只能有一个主类别，"
         f"并可从以下细节标签中选择零个或多个：{tag_text}。"
         "必须按输入顺序返回全部图片，每个index只出现一次，不得遗漏。\n"
+        "【同批必备视图约束】每一批商品原图必定至少包含一张front、一张semi_side、"
+        "一张side、一张top和一张transparent。必须先在全批图片中比较并找出这五张，"
+        "五个角色必须分配给五个不同index，不得把同一张图重复用于多个必备角色。"
+        "透明文件名、透明通道或明确透明底是transparent的重要证据；完整开口俯视图即使"
+        "中央可见Logo或五金也应归为top。其余图片再分类为back、bottom、strap或detail。\n"
         "完整视图规则：front是完整正面，包身正面、包口、Logo或主要五金朝向镜头；"
         "semi_side必须同时看到正面和一侧厚度，包体轮廓存在真实透视；"
         "side只看到狭窄侧廓或包体厚度；back是完整背面。"
@@ -320,9 +326,7 @@ def analyze_assets_with_api(session_id: str, product_image_ids: list[int], api_c
         parsed = json.loads(match.group(0) if match else raw)
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise ValueError("素材分析 API 未返回可读取的固定标签 JSON") from exc
-    results: list[dict[str, Any]] = []
-    roles: dict[int, str] = {}
-    tags_by_image: dict[int, list[str]] = {}
+    api_results: dict[int, dict[str, Any]] = {}
     for item in parsed.get("items", []):
         index = int(item.get("index", 0))
         role = str(item.get("role", "detail"))
@@ -335,19 +339,48 @@ def analyze_assets_with_api(session_id: str, product_image_ids: list[int], api_c
         if local_hints.get(index, ("", [], 0, ""))[0] == "transparent":
             role = "transparent"
         if 1 <= index <= len(rows) and role in API_ANALYSIS_ROLES:
-            image_id = int(rows[index - 1]["id"])
-            roles[image_id] = role
-            tags_by_image[image_id] = tags
-            results.append({
-                "image_id": image_id,
-                "file_name": rows[index - 1]["file_name"],
+            api_results[index] = {
                 "role": role,
                 "tags": tags,
                 "confidence": max(0, min(100, int(item.get("confidence", 0)))),
                 "reason": str(item.get("reason", ""))[:160],
-            })
-    if not results:
+            }
+    if not api_results:
         raise ValueError("素材分析 API 没有返回有效分类")
+
+    for local_item in local_items:
+        index = int(local_item["id"])
+        api_item = api_results.get(index)
+        if not api_item:
+            continue
+        local_item.update({
+            "suggested_role": api_item["role"],
+            "suggested_tags": api_item["tags"],
+            "role_confidence": api_item["confidence"],
+            "role_reason": f"API：{api_item['reason']}",
+        })
+    _refine_product_classifications(local_items)
+
+    results: list[dict[str, Any]] = []
+    roles: dict[int, str] = {}
+    tags_by_image: dict[int, list[str]] = {}
+    for local_item in local_items:
+        index = int(local_item["id"])
+        if not 1 <= index <= len(rows):
+            continue
+        image_id = int(rows[index - 1]["id"])
+        role = str(local_item["suggested_role"])
+        tags = [str(tag) for tag in local_item.get("suggested_tags", []) if str(tag) in DETAIL_TAGS]
+        roles[image_id] = role
+        tags_by_image[image_id] = tags
+        results.append({
+            "image_id": image_id,
+            "file_name": rows[index - 1]["file_name"],
+            "role": role,
+            "tags": tags,
+            "confidence": max(0, min(100, int(local_item.get("role_confidence", 0)))),
+            "reason": str(local_item.get("role_reason", ""))[:160],
+        })
     return {"asset_roles": roles, "asset_tags": tags_by_image, "items": results}
 
 
@@ -620,11 +653,155 @@ def _classify_product_metrics(item: dict[str, Any]) -> tuple[str, list[str], int
     return "front", [], 58, "检测到完整包体但缺少明确正反面标志，暂作正面候选，建议人工确认"
 
 
+def _batch_view_candidates(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for item in products:
+        role = str(item.get("suggested_role", ""))
+        ratio = float(item.get("main_component_ratio", item.get("object_ratio", 1)))
+        fill = float(item.get("main_component_fill_ratio", item.get("foreground_fill_ratio", 0)))
+        foreground = float(item.get("foreground_ratio", 0))
+        bbox = float(item.get("bbox_ratio", 0))
+        if role in {"transparent", "strap", "bottom"}:
+            continue
+        if (
+            0.22 <= ratio <= 1.70
+            and fill >= 0.38
+            and 0.025 <= foreground < 0.30
+            and bbox < 0.48
+        ):
+            candidates.append(item)
+    return candidates
+
+
+def _assign_required_batch_views(products: list[dict[str, Any]]) -> None:
+    """Assign the five views guaranteed to exist in every complete product batch."""
+    if len(products) < 5:
+        return
+
+    transparent_candidates = [
+        item for item in products
+        if (
+            float(item.get("alpha_ratio", 0)) > 0.02
+            or "透明" in str(item.get("file_name", ""))
+            or item.get("suggested_role") == "transparent"
+        )
+    ]
+    complete = _batch_view_candidates(products)
+    if not transparent_candidates or len(complete) < 4:
+        return
+    side_candidates = [
+        item for item in complete
+        if float(item.get("main_component_ratio", item.get("object_ratio", 1))) <= 0.58
+        or item.get("suggested_role") == "side"
+    ]
+    if not side_candidates:
+        return
+
+    selected: dict[str, dict[str, Any]] = {}
+    selected_ids: set[int] = set()
+
+    def item_id(item: dict[str, Any]) -> int:
+        return int(item.get("id", id(item)))
+
+    def available() -> list[dict[str, Any]]:
+        return [item for item in complete if item_id(item) not in selected_ids]
+
+    transparent = max(
+        transparent_candidates,
+        key=lambda item: (
+            5.0 if "透明" in str(item.get("file_name", "")) else 0.0
+        ) + float(item.get("alpha_ratio", 0)) * 20.0
+        + (3.0 if item.get("suggested_role") == "transparent" else 0.0),
+    )
+    selected["transparent"] = transparent
+    selected_ids.add(item_id(transparent))
+
+    side = min(
+        [item for item in side_candidates if item_id(item) not in selected_ids],
+        key=lambda item: (
+            float(item.get("main_component_ratio", item.get("object_ratio", 1)))
+            - (0.18 if item.get("suggested_role") == "side" else 0.0)
+        ),
+    )
+    selected["side"] = side
+    selected_ids.add(item_id(side))
+
+    def top_score(item: dict[str, Any]) -> float:
+        ratio = float(item.get("main_component_ratio", item.get("object_ratio", 1)))
+        symmetry = float(item.get("main_symmetry_error", 0))
+        side_edge = min(4.0, float(item.get("main_body_side_edge_ratio", 4.0)))
+        center_gold = min(0.08, float(item.get("center_gold_ratio", 0)))
+        tags = set(item.get("suggested_tags", []))
+        return (
+            (7.0 if item.get("suggested_role") == "top" else 0.0)
+            + (2.0 if {"zipper_opening", "interior"} & tags else 0.0)
+            + symmetry * 5.0
+            - abs(ratio - 0.82) * 3.5
+            - side_edge * 1.2
+            + center_gold * 18.0
+        )
+
+    top = max(available(), key=top_score)
+    selected["top"] = top
+    selected_ids.add(item_id(top))
+
+    def semi_side_score(item: dict[str, Any]) -> float:
+        ratio = float(item.get("main_component_ratio", item.get("object_ratio", 1)))
+        symmetry = float(item.get("main_symmetry_error", 0))
+        side_edge = min(6.0, float(item.get("main_body_side_edge_ratio", 6.0)))
+        return (
+            (7.0 if item.get("suggested_role") == "semi_side" else 0.0)
+            + min(2.0, side_edge * 0.45)
+            + symmetry * 2.0
+            - abs(ratio - 1.08) * 2.5
+        )
+
+    semi_side = max(available(), key=semi_side_score)
+    selected["semi_side"] = semi_side
+    selected_ids.add(item_id(semi_side))
+
+    def front_score(item: dict[str, Any]) -> float:
+        ratio = float(item.get("main_component_ratio", item.get("object_ratio", 1)))
+        fill = float(item.get("main_component_fill_ratio", item.get("foreground_fill_ratio", 0)))
+        symmetry = float(item.get("main_symmetry_error", 0))
+        strict_gold = min(0.012, float(item.get("strict_center_gold_ratio", 0)))
+        return (
+            (2.0 if item.get("suggested_role") == "front" else 0.0)
+            + fill * 7.0
+            - symmetry * 5.0
+            - abs(ratio - 1.20) * 2.0
+            + strict_gold * 220.0
+        )
+
+    front = max(available(), key=front_score)
+    selected["front"] = front
+
+    role_details = {
+        "transparent": (99, [], "同批必备视图约束：检测到透明文件名、透明通道或透明底，确定为透明正面"),
+        "side": (94, [], "同批必备视图约束：完整包体宽厚比最窄，确定为完整侧面"),
+        "top": (92, ["zipper_opening", "interior"], "同批必备视图约束：俯拍开口、内部轮廓与透视特征最明显，确定为顶部开口全景"),
+        "semi_side": (90, [], "同批必备视图约束：同时保留正面主体和一侧厚度，确定为半侧面"),
+        "front": (88, [], "同批必备视图约束：完整正面轮廓、居中结构与正面Logo特征最匹配，确定为正面主图"),
+    }
+    for role, item in selected.items():
+        confidence, default_tags, reason = role_details[role]
+        tags = list(dict.fromkeys([*item.get("suggested_tags", []), *default_tags]))
+        if role in {"side", "semi_side", "front"}:
+            tags = [tag for tag in tags if tag not in {"interior", "inner_pocket_label"}]
+        item.update({
+            "suggested_role": role,
+            "suggested_tags": tags,
+            "role_confidence": max(confidence, int(item.get("role_confidence", 0))),
+            "role_reason": reason,
+        })
+
+
 def _refine_product_classifications(products: list[dict[str, Any]]) -> None:
     """Use relative geometry within one product batch to correct obvious view mix-ups."""
     full_roles = {"front", "semi_side", "side", "back", "top"}
     candidates = [item for item in products if item.get("suggested_role") in full_roles]
     if len(candidates) < 3:
+        _assign_required_batch_views(products)
         return
 
     regular = [
@@ -633,6 +810,7 @@ def _refine_product_classifications(products: list[dict[str, Any]]) -> None:
         and float(item.get("bbox_ratio", 0)) < 0.48
     ]
     if len(regular) < 3:
+        _assign_required_batch_views(products)
         return
 
     ratios = np.array([float(item.get("main_component_ratio", item.get("object_ratio", 1))) for item in regular])
@@ -653,6 +831,7 @@ def _refine_product_classifications(products: list[dict[str, Any]]) -> None:
         and float(item.get("main_component_fill_ratio", 0)) >= 0.52
     ]
     if len(face_candidates) < 2:
+        _assign_required_batch_views(products)
         return
 
     gold_values = [float(item.get("strict_center_gold_ratio", 0)) for item in face_candidates]
@@ -715,6 +894,7 @@ def _refine_product_classifications(products: list[dict[str, Any]]) -> None:
                 "role_confidence": 78,
                 "role_reason": "同批视图校正后检测到正面中央Logo/五金，判断为正面主图",
             })
+    _assign_required_batch_views(products)
 
 
 def _valid_session_id(session_id: str | None) -> bool:
@@ -1141,15 +1321,26 @@ def analyze_assets(
     return {"assets": {"product": products, "model": models, "tag": tags}, "slots": slots}
 
 
+@lru_cache(maxsize=64)
+def _load_image_file(image_id: int, file_path: str, modified_ns: int) -> Image.Image:
+    with Image.open(file_path) as source:
+        source.draft("RGB", (2400, 2400))
+        image = ImageOps.exif_transpose(source)
+        image.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
+        loaded = image.copy()
+    loaded.info["_organizer_image_id"] = image_id
+    loaded.info["_organizer_modified_ns"] = modified_ns
+    return loaded
+
+
 def _load_image(image_id: int) -> Image.Image:
     rows = _uploaded_rows([image_id])
     if not rows:
         raise ValueError(f"图片记录不存在：{image_id}")
-    with Image.open(rows[0]["file_path"]) as source:
-        source.draft("RGB", (2400, 2400))
-        image = ImageOps.exif_transpose(source)
-        image.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
-        return image.copy()
+    file_path = Path(rows[0]["file_path"])
+    if not file_path.exists():
+        raise ValueError(f"图片文件不存在：{image_id}")
+    return _load_image_file(image_id, str(file_path), file_path.stat().st_mtime_ns).copy()
 
 
 def _fit(image: Image.Image, size: tuple[int, int], margin: int = 0, contain: bool = False) -> Image.Image:
@@ -1282,6 +1473,31 @@ def _crop_source(source: Image.Image, adjustment: dict[str, Any] | None) -> Imag
     return source.crop((left, top, right, bottom))
 
 
+def _crop_cache_key(adjustment: dict[str, Any] | None) -> tuple[int, int, int, int]:
+    normalized = _normalize_adjustment(adjustment)
+    return tuple(
+        int(round(normalized[name] * 1_000_000))
+        for name in ("crop_x", "crop_y", "crop_width", "crop_height")
+    )
+
+
+@lru_cache(maxsize=96)
+def _cached_product_cutout(
+    image_id: int,
+    modified_ns: int,
+    crop_key: tuple[int, int, int, int],
+) -> Image.Image:
+    crop_x, crop_y, crop_width, crop_height = (value / 1_000_000 for value in crop_key)
+    source = _load_image(image_id)
+    cropped = _crop_source(source, {
+        "crop_x": crop_x,
+        "crop_y": crop_y,
+        "crop_width": crop_width,
+        "crop_height": crop_height,
+    })
+    return _product_cutout(cropped)
+
+
 def _paste_layer(
     canvas: Image.Image,
     layer: Image.Image,
@@ -1328,8 +1544,16 @@ def _paste_product(
     box: tuple[int, int, int, int],
     adjustment: dict[str, Any] | None = None,
 ) -> None:
-    cropped = _crop_source(source, adjustment)
-    cutout = _product_cutout(cropped)
+    image_id = source.info.get("_organizer_image_id")
+    modified_ns = source.info.get("_organizer_modified_ns")
+    if isinstance(image_id, int) and isinstance(modified_ns, int):
+        cutout = _cached_product_cutout(
+            image_id,
+            modified_ns,
+            _crop_cache_key(adjustment),
+        ).copy()
+    else:
+        cutout = _product_cutout(_crop_source(source, adjustment))
     _paste_layer(canvas, cutout, box, adjustment)
 
 
@@ -1456,9 +1680,9 @@ def _detail_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None
     title = "细节展示"
     title_font = _font(34, True)
     title_box = draw.textbbox((0, 0), title, font=title_font)
-    draw.text(((750 - (title_box[2] - title_box[0])) / 2, 70), title, font=title_font, fill="#aaaaaa")
+    draw.text(((750 - (title_box[2] - title_box[0])) / 2, 70), title, font=title_font, fill="#c4c4c4")
     cropped = _crop_source(source.convert("RGB"), adjustment)
-    _paste_layer(canvas, cropped, (55, 181, 695, 703), adjustment)
+    _paste_layer(canvas, cropped, (52, 181, 695, 704), adjustment, mode="cover")
     return canvas
 
 
@@ -1499,25 +1723,44 @@ def _save_png_30(image: Image.Image, path: Path) -> None:
 
 @lru_cache(maxsize=8)
 def _jd_logo_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    candidates = [
-        Path("C:/Windows/Fonts/times.ttf"),
-        Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"),
-        BUNDLED_FONT_PATH,
-    ]
+    candidates = [JD_LOGO_FONT_PATH, BUNDLED_FONT_PATH]
     for path in candidates:
         if path.exists():
             return ImageFont.truetype(str(path), size=size)
     return ImageFont.load_default()
 
 
-def _draw_jd_elle_logo(canvas: Image.Image, size: tuple[int, int]) -> None:
-    scale = min(size[0] / 800, size[1] / 800)
-    draw = ImageDraw.Draw(canvas)
-    font = _jd_logo_font(max(22, int(round(36 * scale))))
+@lru_cache(maxsize=1)
+def _jd_elle_logo_layer() -> Image.Image:
+    font = _jd_logo_font(160)
     text = "E L L E"
-    x = int(round(35 * size[0] / 800))
-    y = int(round(45 * size[1] / 800))
-    draw.text((x, y), text, font=font, fill="#111111")
+    bbox = font.getbbox(text)
+    layer = Image.new("L", (bbox[2] - bbox[0] + 8, bbox[3] - bbox[1] + 8), 0)
+    draw = ImageDraw.Draw(layer)
+    draw.text((4 - bbox[0], 4 - bbox[1]), text, font=font, fill=255, stroke_width=0)
+    glyph_bbox = layer.getbbox()
+    if glyph_bbox:
+        layer = layer.crop(glyph_bbox)
+    return layer.resize((187, 60), Image.Resampling.LANCZOS)
+
+
+def _draw_jd_elle_logo(
+    canvas: Image.Image,
+    size: tuple[int, int],
+    color: str = "black",
+) -> None:
+    if size == (800, 800):
+        position = (32, 38)
+    elif size == (750, 1000):
+        position = (56, 45)
+    else:
+        position = (
+            int(round(32 * size[0] / 800)),
+            int(round(38 * size[1] / 800)),
+        )
+    logo_mask = _jd_elle_logo_layer()
+    ink = Image.new("RGB", logo_mask.size, "#ffffff" if color == "white" else "#111111")
+    canvas.paste(ink, position, logo_mask)
 
 
 def _jd_model_page(
@@ -1526,11 +1769,12 @@ def _jd_model_page(
     adjustment: dict[str, Any] | None,
     *,
     with_logo: bool,
+    logo_color: str = "black",
 ) -> Image.Image:
     canvas = Image.new("RGB", size, "white")
     _paste_layer(canvas, _crop_source(source.convert("RGB"), adjustment), (0, 0, *size), adjustment, mode="cover")
     if with_logo:
-        _draw_jd_elle_logo(canvas, size)
+        _draw_jd_elle_logo(canvas, size, logo_color)
     return canvas
 
 
@@ -1540,6 +1784,7 @@ def _jd_product_page(
     adjustment: dict[str, Any] | None,
     *,
     detail: bool = False,
+    logo_color: str = "black",
 ) -> Image.Image:
     canvas = Image.new("RGB", size, "white")
     if detail:
@@ -1550,7 +1795,7 @@ def _jd_product_page(
         else:
             box = (100, 145, 650, 900)
         _paste_product(canvas, source, box, adjustment)
-    _draw_jd_elle_logo(canvas, size)
+    _draw_jd_elle_logo(canvas, size, logo_color)
     return canvas
 
 
@@ -1755,9 +2000,10 @@ def _jd_size_comparison_page(
     size: tuple[int, int],
     product_info: dict[str, str],
     adjustment: dict[str, Any] | None,
+    logo_color: str = "black",
 ) -> Image.Image:
     canvas = Image.new("RGB", size, "#f3f3f3")
-    _draw_jd_elle_logo(canvas, size)
+    _draw_jd_elle_logo(canvas, size, logo_color)
     width, height = size
     normalized = _normalize_adjustment(adjustment)
     cutout = _product_cutout(_crop_source(source, adjustment))
@@ -1860,6 +2106,7 @@ def _render_jd_slot_image(
     product_info: dict[str, str],
     adjustments: list[dict[str, Any]],
     target_folder: str = "800",
+    logo_color: str = "black",
 ) -> Image.Image | None:
     if not image_ids:
         return None
@@ -1869,13 +2116,13 @@ def _render_jd_slot_image(
     if file_name == "0-无logo.jpg":
         return _jd_model_page(source, size, adjustment, with_logo=False)
     if file_name == "1.jpg":
-        return _jd_model_page(source, size, adjustment, with_logo=True)
+        return _jd_model_page(source, size, adjustment, with_logo=True, logo_color=logo_color)
     if file_name == "2.jpg":
-        return _jd_product_page(source, size, adjustment)
+        return _jd_product_page(source, size, adjustment, logo_color=logo_color)
     if file_name in {"3.jpg", "4.jpg"}:
-        return _jd_product_page(source, size, adjustment, detail=True)
+        return _jd_product_page(source, size, adjustment, detail=True, logo_color=logo_color)
     if file_name == "5.jpg":
-        return _jd_size_comparison_page(source, size, product_info, adjustment)
+        return _jd_size_comparison_page(source, size, product_info, adjustment, logo_color)
     if file_name == "透明.png":
         return _normalized_product_page(source, transparent=True, adjustment=adjustment)
     return None
@@ -1889,15 +2136,16 @@ def _slot_map(slots: list[dict[str, Any]], platform: str = "vip") -> dict[str, d
                 _normalize_adjustment(value if isinstance(value, dict) else None)
                 for value in item.get("adjustments", [])
             ],
+            "logo_color": "white" if item.get("logo_color") == "white" else "black",
         }
         for item in slots
     }
     # Linked model layouts always use one source image.
     if platform == "jd" and "0-无logo.jpg" in slot_map:
-        slot_map.setdefault("1.jpg", {"image_ids": [], "adjustments": []})
+        slot_map.setdefault("1.jpg", {"image_ids": [], "adjustments": [], "logo_color": "black"})
         slot_map["1.jpg"]["image_ids"] = list(slot_map["0-无logo.jpg"]["image_ids"])
     elif "1.jpg" in slot_map:
-        slot_map.setdefault("50.jpg", {"image_ids": [], "adjustments": []})
+        slot_map.setdefault("50.jpg", {"image_ids": [], "adjustments": [], "logo_color": "black"})
         slot_map["50.jpg"]["image_ids"] = list(slot_map["1.jpg"]["image_ids"])
     return slot_map
 
@@ -1928,10 +2176,18 @@ def _render_slot_image(
     adjustments: list[dict[str, Any]] | None = None,
     platform: str = "vip",
     target_folder: str = "800",
+    logo_color: str = "black",
 ) -> Image.Image | None:
     adjustments = adjustments or []
     if platform == "jd":
-        return _render_jd_slot_image(file_name, image_ids, product_info, adjustments, target_folder)
+        return _render_jd_slot_image(
+            file_name,
+            image_ids,
+            product_info,
+            adjustments,
+            target_folder,
+            logo_color,
+        )
     adjustment = adjustments[0] if adjustments else None
     if file_name == "401.jpg":
         source = _load_image(image_ids[0]) if image_ids else None
@@ -1983,6 +2239,14 @@ def _save_slot_image(image: Image.Image, file_name: str, output: Path) -> None:
     image.convert("RGB").save(output, quality=quality, subsampling=0)
 
 
+def _save_preview_image(image: Image.Image, file_name: str, output: Path) -> None:
+    """Encode temporary previews quickly without changing layout or color."""
+    if file_name.endswith(".png"):
+        image.save(output, compress_level=1)
+        return
+    image.convert("RGB").save(output, quality=95, subsampling=0, optimize=False)
+
+
 def _preview_lock(session_id: str) -> Lock:
     with _PREVIEW_LOCKS_GUARD:
         return _PREVIEW_LOCKS.setdefault(session_id, Lock())
@@ -2009,22 +2273,30 @@ def render_slot_preview(
     valid_names = {name for name, _, _, _ in slot_definitions}
     if file_name not in valid_names:
         raise ValueError("输出位置不存在")
-    with _preview_lock(session_id):
-        slot_map = _slot_map(slots, platform)
-        _validate_slot_map(session_id, slot_map, platform)
-        slot = slot_map.get(file_name, {"image_ids": [], "adjustments": []})
-        image = _render_slot_image(file_name, slot["image_ids"], product_info, slot["adjustments"], platform)
-        if image is None:
-            raise ValueError("当前输出位置缺少素材")
-        preview_id = uuid.uuid4().hex[:12]
-        folder = _session_result_dir(session_id) / "previews" / preview_id
-        folder.mkdir(parents=True, exist_ok=True)
-        output = folder / file_name
-        _save_slot_image(image, file_name, output)
-        return {
-            "file_name": file_name,
-            "preview_url": f"/api/vip-organizer/previews/{session_id}/{preview_id}/{file_name}",
-        }
+    # A slot preview writes to its own UUID folder, so it can render independently
+    # without waiting for the slower full-set preview lock.
+    slot_map = _slot_map(slots, platform)
+    _validate_slot_map(session_id, slot_map, platform)
+    slot = slot_map.get(file_name, {"image_ids": [], "adjustments": [], "logo_color": "black"})
+    image = _render_slot_image(
+        file_name,
+        slot["image_ids"],
+        product_info,
+        slot["adjustments"],
+        platform,
+        logo_color=slot["logo_color"],
+    )
+    if image is None:
+        raise ValueError("当前输出位置缺少素材")
+    preview_id = uuid.uuid4().hex[:12]
+    folder = _session_result_dir(session_id) / "previews" / preview_id
+    folder.mkdir(parents=True, exist_ok=True)
+    output = folder / file_name
+    _save_preview_image(image, file_name, output)
+    return {
+        "file_name": file_name,
+        "preview_url": f"/api/vip-organizer/previews/{session_id}/{preview_id}/{file_name}",
+    }
 
 
 def _render_previews(
@@ -2044,13 +2316,20 @@ def _render_previews(
     missing: list[str] = []
 
     for file_name, _, _, _ in slot_definitions:
-        slot = slot_map.get(file_name, {"image_ids": [], "adjustments": []})
-        image = _render_slot_image(file_name, slot["image_ids"], product_info, slot["adjustments"], platform)
+        slot = slot_map.get(file_name, {"image_ids": [], "adjustments": [], "logo_color": "black"})
+        image = _render_slot_image(
+            file_name,
+            slot["image_ids"],
+            product_info,
+            slot["adjustments"],
+            platform,
+            logo_color=slot["logo_color"],
+        )
         if image is None:
             missing.append(file_name)
             continue
         output = folder / file_name
-        _save_slot_image(image, file_name, output)
+        _save_preview_image(image, file_name, output)
         previews[file_name] = f"/api/vip-organizer/previews/{session_id}/{preview_id}/{file_name}"
 
     preview_sets = sorted(
@@ -2084,7 +2363,7 @@ def export_package(
             output_folder.mkdir(parents=True, exist_ok=True)
         for file_name, _, _, _ in slot_definitions:
             targets = ["800"] if file_name in {"0-无logo.jpg", "透明.png"} else ["800", "750"]
-            slot = slot_map.get(file_name, {"image_ids": [], "adjustments": []})
+            slot = slot_map.get(file_name, {"image_ids": [], "adjustments": [], "logo_color": "black"})
             for target in targets:
                 image = _render_slot_image(
                     file_name,
@@ -2093,6 +2372,7 @@ def export_package(
                     slot["adjustments"],
                     platform,
                     target,
+                    slot["logo_color"],
                 )
                 if image is None:
                     missing.append(f"{target}/{file_name}")
@@ -2101,7 +2381,7 @@ def export_package(
     else:
         for file_name, _, _, _ in slot_definitions:
             output = folder / file_name
-            slot = slot_map.get(file_name, {"image_ids": [], "adjustments": []})
+            slot = slot_map.get(file_name, {"image_ids": [], "adjustments": [], "logo_color": "black"})
             image = _render_slot_image(file_name, slot["image_ids"], product_info, slot["adjustments"])
             if image is None:
                 missing.append(file_name)

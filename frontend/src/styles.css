@@ -168,13 +168,19 @@
 .slot-source-stage.is-cropping { cursor: crosshair; }
 .slot-result-stage { cursor: grab; background: #e7ebe9; }
 .slot-result-stage:active { cursor: grabbing; }
-.slot-result-stage.is-loading > img { opacity: .55; }
+.slot-result-stage.is-loading > img { opacity: .84; }
 .slot-crop-selection { position: absolute; border: 2px solid #fff; outline: 2px solid #1f6856; background: rgba(31, 104, 86, .12); box-shadow: 0 0 0 9999px rgba(10, 18, 15, .48); pointer-events: none; }
-.slot-preview-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; color: #164b3e; font-weight: 700; background: rgba(255, 255, 255, .62); }
-.slot-adjustment-controls { display: flex; align-items: center; gap: 7px; padding: 13px 16px; border-top: 1px solid #dfe5e2; background: #f7f9f8; }
+.slot-preview-loading { position: absolute; right: 12px; bottom: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 7px 10px; border: 1px solid rgba(31, 93, 77, .25); border-radius: 5px; color: #164b3e; font-size: 12px; font-weight: 700; background: rgba(255, 255, 255, .92); box-shadow: 0 4px 16px rgba(19, 54, 44, .12); pointer-events: none; }
+.slot-adjustment-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 13px 16px; border-top: 1px solid #dfe5e2; background: #f7f9f8; }
 .slot-adjustment-controls button { display: inline-flex; min-height: 38px; align-items: center; justify-content: center; gap: 6px; padding: 7px 10px; border: 1px solid #ced8d3; border-radius: 5px; background: #fff; color: #273d35; }
 .slot-adjustment-controls button.active-tool { border-color: #1f5d4d; color: #174a3d; background: #e8f1ed; }
 .slot-adjustment-controls button.primary { margin-left: auto; border-color: #1f5a4b; color: #fff; background: #1f5a4b; }
+.slot-logo-color { display: inline-flex; align-items: center; gap: 5px; padding-left: 9px; border-left: 1px solid #d8e0dc; }
+.slot-logo-color > span { margin-right: 2px; color: #617069; font-size: 13px; }
+.slot-logo-color button { min-height: 34px; padding: 5px 8px; }
+.logo-color-swatch { display: inline-block; width: 14px; height: 14px; border: 1px solid #9ea9a4; border-radius: 50%; }
+.logo-color-swatch.black { background: #111; }
+.logo-color-swatch.white { background: #fff; }
 .slot-zoom-value { min-width: 50px; color: #3f5049; text-align: center; font-variant-numeric: tabular-nums; }
 .slot-drag-hint { display: inline-flex; align-items: center; gap: 5px; margin-left: 5px; color: #68736d; font-size: 12px; white-space: nowrap; }
 .slot-adjustment-dialog > .alert { margin: 0 16px 14px; }

@@ -1,5 +1,6 @@
 import zipfile
 
+import numpy as np
 from PIL import Image
 
 from backend.services import vip_organizer_service as service
@@ -39,3 +40,51 @@ def test_jd_export_uses_separate_800_and_750_folders(tmp_path, monkeypatch):
 
     assert names == expected_800 | expected_750
     assert all(name.startswith(("800/", "750/")) for name in names)
+
+
+def _dark_pixel_bbox(image: Image.Image) -> tuple[int, int, int, int]:
+    pixels = np.asarray(image.convert("RGB"))
+    mask = pixels.mean(axis=2) < 245
+    ys, xs = np.where(mask)
+    return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+
+
+def _bright_pixel_bbox(image: Image.Image) -> tuple[int, int, int, int]:
+    pixels = np.asarray(image.convert("RGB"))
+    mask = pixels.mean(axis=2) > 50
+    ys, xs = np.where(mask)
+    return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+
+
+def test_jd_logo_matches_example_geometry():
+    canvas_800 = Image.new("RGB", (800, 800), "white")
+    service._draw_jd_elle_logo(canvas_800, canvas_800.size)
+    assert _dark_pixel_bbox(canvas_800) == (32, 38, 219, 98)
+
+    canvas_750 = Image.new("RGB", (750, 1000), "white")
+    service._draw_jd_elle_logo(canvas_750, canvas_750.size)
+    assert _dark_pixel_bbox(canvas_750) == (56, 45, 243, 105)
+
+
+def test_jd_white_logo_uses_the_same_geometry():
+    canvas_800 = Image.new("RGB", (800, 800), "#222222")
+    service._draw_jd_elle_logo(canvas_800, canvas_800.size, "white")
+    assert _bright_pixel_bbox(canvas_800) == (32, 38, 219, 98)
+
+    canvas_750 = Image.new("RGB", (750, 1000), "#222222")
+    service._draw_jd_elle_logo(canvas_750, canvas_750.size, "white")
+    assert _bright_pixel_bbox(canvas_750) == (56, 45, 243, 105)
+
+
+def test_jd_logo_color_is_stored_per_output_slot():
+    slot_map = service._slot_map(
+        [
+            {"file_name": "0-无logo.jpg", "image_ids": [1], "adjustments": []},
+            {"file_name": "1.jpg", "image_ids": [1], "adjustments": [], "logo_color": "white"},
+            {"file_name": "2.jpg", "image_ids": [2], "adjustments": []},
+        ],
+        "jd",
+    )
+
+    assert slot_map["1.jpg"]["logo_color"] == "white"
+    assert slot_map["2.jpg"]["logo_color"] == "black"

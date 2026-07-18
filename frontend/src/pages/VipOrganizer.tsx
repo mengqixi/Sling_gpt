@@ -12,6 +12,8 @@ type UploadItem = {
   height: number;
 };
 
+type LogoColor = "black" | "white";
+
 type Slot = {
   file_name: string;
   title: string;
@@ -21,6 +23,7 @@ type Slot = {
   confidence: number;
   reason: string;
   adjustments?: ImageAdjustment[];
+  logo_color?: LogoColor;
 };
 
 type ImageAdjustment = {
@@ -155,7 +158,6 @@ function SlotAdjustmentEditor({
   sourceIndex,
   sourceUrl,
   initialPreview,
-  slots,
   productInfo,
   platform,
   onClose,
@@ -166,15 +168,17 @@ function SlotAdjustmentEditor({
   sourceIndex: number;
   sourceUrl: string;
   initialPreview?: string;
-  slots: Slot[];
   productInfo: Record<string, string>;
   platform: OrganizerPlatform;
   onClose: () => void;
-  onSave: (adjustment: ImageAdjustment, previewUrl?: string) => void;
+  onSave: (adjustment: ImageAdjustment, logoColor: LogoColor, previewUrl?: string) => void;
 }) {
   const initial = normalizeAdjustment(slot.adjustments?.[sourceIndex]);
+  const supportsLogoColor = platform === "jd" && /^[1-5]\.jpg$/.test(slot.file_name);
   const [draft, setDraft] = useState<ImageAdjustment>(initial);
+  const [logoColor, setLogoColor] = useState<LogoColor>(slot.logo_color === "white" ? "white" : "black");
   const [renderedPreview, setRenderedPreview] = useState(initialPreview || "");
+  const [previewSynced, setPreviewSynced] = useState(Boolean(initialPreview));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [cropMode, setCropMode] = useState(false);
@@ -184,42 +188,115 @@ function SlotAdjustmentEditor({
   const cropStartRef = useRef<{ x: number; y: number } | null>(null);
   const cropSelectionRef = useRef<{ left: number; top: number; width: number; height: number } | null>(null);
   const moveStartRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(null);
+  const pendingMoveRef = useRef<ImageAdjustment | null>(null);
+  const moveFrameRef = useRef<number | null>(null);
+  const draftRef = useRef<ImageAdjustment>(initial);
+  const logoColorRef = useRef<LogoColor>(slot.logo_color === "white" ? "white" : "black");
+  const renderedPreviewRef = useRef(initialPreview || "");
+  const draftVersionRef = useRef(0);
+  const syncedVersionRef = useRef(initialPreview ? 0 : -1);
   const previewRequestRef = useRef(0);
+  const previewAbortRef = useRef<AbortController | null>(null);
+  const previewTimerRef = useRef<number | null>(null);
 
-  function slotsWithDraft() {
-    return slots.map((item) => {
-      if (item.file_name !== slot.file_name) return item;
-      const adjustments = [...(item.adjustments || [])];
-      while (adjustments.length <= sourceIndex) adjustments.push({ ...DEFAULT_ADJUSTMENT });
-      adjustments[sourceIndex] = draft;
-      return { ...item, adjustments };
-    });
+  function slotWithDraft(nextDraft: ImageAdjustment) {
+    const adjustments = [...(slot.adjustments || [])];
+    while (adjustments.length <= sourceIndex) adjustments.push({ ...DEFAULT_ADJUSTMENT });
+    adjustments[sourceIndex] = nextDraft;
+    return { ...slot, adjustments, logo_color: logoColorRef.current };
   }
 
-  async function refreshPreview() {
+  function clearPreviewTimer() {
+    if (previewTimerRef.current !== null) {
+      window.clearTimeout(previewTimerRef.current);
+      previewTimerRef.current = null;
+    }
+  }
+
+  function cancelStalePreview() {
+    if (!previewAbortRef.current) return;
+    previewAbortRef.current.abort();
+    previewAbortRef.current = null;
+    previewRequestRef.current += 1;
+    setBusy(false);
+  }
+
+  function schedulePreview(nextDraft: ImageAdjustment, delay = 180) {
+    clearPreviewTimer();
+    const version = draftVersionRef.current;
+    previewTimerRef.current = window.setTimeout(() => {
+      previewTimerRef.current = null;
+      void refreshPreview(nextDraft, version);
+    }, delay);
+  }
+
+  function applyDraft(nextDraft: ImageAdjustment, previewDelay: number | null = 180) {
+    cancelStalePreview();
+    draftVersionRef.current += 1;
+    draftRef.current = nextDraft;
+    setDraft(nextDraft);
+    setPreviewSynced(false);
+    if (previewDelay !== null) schedulePreview(nextDraft, previewDelay);
+  }
+
+  function changeLogoColor(nextColor: LogoColor) {
+    if (logoColorRef.current === nextColor) return;
+    cancelStalePreview();
+    logoColorRef.current = nextColor;
+    setLogoColor(nextColor);
+    draftVersionRef.current += 1;
+    setPreviewSynced(false);
+    schedulePreview(draftRef.current, 40);
+  }
+
+  async function refreshPreview(
+    nextDraft: ImageAdjustment = draftRef.current,
+    version = draftVersionRef.current
+  ): Promise<string | undefined> {
+    clearPreviewTimer();
     const requestId = ++previewRequestRef.current;
+    previewAbortRef.current?.abort();
+    const controller = new AbortController();
+    previewAbortRef.current = controller;
     setBusy(true);
     setError("");
     try {
       const result = await api.previewVipOrganizerSlot({
         session_id: sessionId,
-        slots: slotsWithDraft(),
+        slots: [slotWithDraft(nextDraft)],
         product_info: productInfo,
         file_name: slot.file_name,
         platform
-      });
-      if (requestId === previewRequestRef.current) setRenderedPreview(result.preview_url);
+      }, controller.signal);
+      if (requestId === previewRequestRef.current) {
+        renderedPreviewRef.current = result.preview_url;
+        setRenderedPreview(result.preview_url);
+        if (version === draftVersionRef.current) {
+          syncedVersionRef.current = version;
+          setPreviewSynced(true);
+        }
+      }
+      return result.preview_url;
     } catch (requestError: any) {
+      if (requestError?.name === "AbortError") return;
       if (requestId === previewRequestRef.current) setError(requestError.message || "当前输出预览生成失败");
+      return undefined;
     } finally {
-      if (requestId === previewRequestRef.current) setBusy(false);
+      if (requestId === previewRequestRef.current) {
+        previewAbortRef.current = null;
+        setBusy(false);
+      }
     }
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(refreshPreview, 260);
-    return () => window.clearTimeout(timer);
-  }, [draft]);
+    if (!initialPreview) schedulePreview(initial, 0);
+    return () => {
+      clearPreviewTimer();
+      previewAbortRef.current?.abort();
+      if (moveFrameRef.current !== null) window.cancelAnimationFrame(moveFrameRef.current);
+    };
+  }, []);
 
   function displayedImageRect() {
     const stage = sourceStageRef.current;
@@ -248,8 +325,8 @@ function SlotAdjustmentEditor({
     const imageRect = displayedImageRect();
     cropStartRef.current = null;
     if (!selection || !imageRect || selection.width < 8 || selection.height < 8) return;
-    setDraft((current) => ({
-      ...current,
+    applyDraft({
+      ...draftRef.current,
       crop_x: (selection.left - imageRect.left) / imageRect.width,
       crop_y: (selection.top - imageRect.top) / imageRect.height,
       crop_width: selection.width / imageRect.width,
@@ -257,21 +334,52 @@ function SlotAdjustmentEditor({
       zoom: 1,
       offset_x: 0,
       offset_y: 0
-    }));
+    }, 80);
     setCropMode(false);
     cropSelectionRef.current = null;
     setCropSelection(null);
   }
 
   function changeZoom(delta: number) {
-    setDraft((current) => ({ ...current, zoom: Math.max(0.5, Math.min(4, Math.round((current.zoom + delta) * 20) / 20)) }));
+    const current = draftRef.current;
+    applyDraft({
+      ...current,
+      zoom: Math.max(0.5, Math.min(4, Math.round((current.zoom + delta) * 100) / 100))
+    }, 160);
   }
 
   function reset() {
-    setDraft({ ...DEFAULT_ADJUSTMENT });
+    logoColorRef.current = "black";
+    setLogoColor("black");
+    applyDraft({ ...DEFAULT_ADJUSTMENT }, 80);
     cropSelectionRef.current = null;
     setCropSelection(null);
     setCropMode(false);
+  }
+
+  function flushPendingMove() {
+    if (moveFrameRef.current !== null) {
+      window.cancelAnimationFrame(moveFrameRef.current);
+      moveFrameRef.current = null;
+    }
+    const nextDraft = pendingMoveRef.current;
+    pendingMoveRef.current = null;
+    if (nextDraft) applyDraft(nextDraft, null);
+  }
+
+  function finishMove() {
+    flushPendingMove();
+    moveStartRef.current = null;
+    schedulePreview(draftRef.current, 70);
+  }
+
+  async function saveAdjustment() {
+    const currentDraft = draftRef.current;
+    let previewUrl = renderedPreviewRef.current;
+    if (syncedVersionRef.current !== draftVersionRef.current) {
+      previewUrl = await refreshPreview(currentDraft, draftVersionRef.current) || "";
+    }
+    if (previewUrl) onSave(currentDraft, logoColorRef.current, previewUrl);
   }
 
   return (
@@ -321,6 +429,7 @@ function SlotAdjustmentEditor({
                 setCropSelection(nextSelection);
               }}
               onPointerUp={finishCrop}
+              onPointerCancel={finishCrop}
             >
               <img ref={sourceImageRef} src={sourceUrl} alt="原始素材" draggable={false} />
               {cropSelection && <div className="slot-crop-selection" style={cropSelection} />}
@@ -336,7 +445,7 @@ function SlotAdjustmentEditor({
               className={`slot-result-stage${busy ? " is-loading" : ""}`}
               onWheel={(event) => {
                 event.preventDefault();
-                changeZoom(event.deltaY < 0 ? 0.05 : -0.05);
+                changeZoom(event.deltaY < 0 ? 0.02 : -0.02);
               }}
               onPointerDown={(event) => {
                 event.currentTarget.setPointerCapture(event.pointerId);
@@ -346,16 +455,28 @@ function SlotAdjustmentEditor({
                 const start = moveStartRef.current;
                 if (!start) return;
                 const bounds = event.currentTarget.getBoundingClientRect();
-                setDraft((current) => ({
-                  ...current,
+                pendingMoveRef.current = {
+                  ...draftRef.current,
                   offset_x: Math.max(-1.5, Math.min(1.5, start.offsetX + (event.clientX - start.x) / bounds.width)),
                   offset_y: Math.max(-1.5, Math.min(1.5, start.offsetY + (event.clientY - start.y) / bounds.height))
-                }));
+                };
+                if (moveFrameRef.current === null) {
+                  moveFrameRef.current = window.requestAnimationFrame(() => {
+                    moveFrameRef.current = null;
+                    const nextDraft = pendingMoveRef.current;
+                    pendingMoveRef.current = null;
+                    if (nextDraft) applyDraft(nextDraft, null);
+                  });
+                }
               }}
-              onPointerUp={() => { moveStartRef.current = null; }}
+              onPointerUp={finishMove}
+              onPointerCancel={finishMove}
             >
               {renderedPreview ? <img src={renderedPreview} alt={`${slot.file_name} 模板预览`} draggable={false} /> : <FileImage size={38} />}
-              {busy && <span className="slot-preview-loading"><LoaderCircle className="spin" size={20} />更新中</span>}
+              {(busy || !previewSynced) && <span className="slot-preview-loading">
+                {busy ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={16} />}
+                {busy ? "正在套用模板" : "等待更新"}
+              </span>}
             </div>
           </div>
         </div>
@@ -366,13 +487,22 @@ function SlotAdjustmentEditor({
             cropSelectionRef.current = null;
             setCropSelection(null);
           }}><Crop size={18} />裁剪</button>
-          <button type="button" onClick={() => changeZoom(-0.1)}><ZoomOut size={18} />缩小</button>
+          <button type="button" onClick={() => changeZoom(-0.05)}><ZoomOut size={18} />缩小</button>
           <span className="slot-zoom-value">{Math.round(draft.zoom * 100)}%</span>
-          <button type="button" onClick={() => changeZoom(0.1)}><ZoomIn size={18} />放大</button>
+          <button type="button" onClick={() => changeZoom(0.05)}><ZoomIn size={18} />放大</button>
+          {supportsLogoColor && <div className="slot-logo-color" role="group" aria-label="左上角 Logo 颜色">
+            <span>Logo</span>
+            <button type="button" className={logoColor === "black" ? "active-tool" : ""} onClick={() => changeLogoColor("black")}>
+              <i className="logo-color-swatch black" />黑色
+            </button>
+            <button type="button" className={logoColor === "white" ? "active-tool" : ""} onClick={() => changeLogoColor("white")}>
+              <i className="logo-color-swatch white" />白色
+            </button>
+          </div>}
           <button type="button" onClick={reset}><RotateCcw size={18} />恢复自动</button>
-          <button type="button" disabled={busy} onClick={refreshPreview}><RefreshCw size={18} />重试预览</button>
+          <button type="button" disabled={busy} onClick={() => void refreshPreview(draftRef.current, draftVersionRef.current)}><RefreshCw size={18} />重试预览</button>
           <span className="slot-drag-hint"><Move size={16} />位置 {Math.round(draft.offset_x * 100)} / {Math.round(draft.offset_y * 100)}</span>
-          <button type="button" className="primary" disabled={busy || !renderedPreview} onClick={() => onSave(draft, renderedPreview)}><Save size={18} />保存调整</button>
+          <button type="button" className="primary" disabled={busy || !renderedPreview} onClick={() => void saveAdjustment()}><Save size={18} />保存调整</button>
         </div>
         {error && <div className="alert warning">{error}</div>}
       </section>
@@ -403,7 +533,7 @@ export default function VipOrganizer() {
   const [previewBusy, setPreviewBusy] = useState(false);
   const [adjustmentEditor, setAdjustmentEditor] = useState<{ fileName: string; sourceIndex: number } | null>(null);
   const previewRequestRef = useRef(0);
-  const previewQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const previewAbortRef = useRef<AbortController | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [info, setInfo] = useState({
     product_name: "ELLE箱包",
@@ -428,45 +558,42 @@ export default function VipOrganizer() {
 
   useEffect(() => {
     if (!sessionId || !slots.length) {
+      previewAbortRef.current?.abort();
       setSlotPreviews({});
       return;
     }
     const requestId = ++previewRequestRef.current;
-    const timer = window.setTimeout(() => {
+    previewAbortRef.current?.abort();
+    const controller = new AbortController();
+    previewAbortRef.current = controller;
+    const timer = window.setTimeout(async () => {
       const payload = {
         session_id: sessionId,
         slots,
         product_info: organizerProductInfo(),
         platform
       };
-      const queued = previewQueueRef.current.catch(() => undefined).then(async () => {
-        if (requestId !== previewRequestRef.current) return;
-        setPreviewBusy(true);
-        let lastError: any = null;
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          try {
-            const result = await api.previewVipOrganizer(payload);
-            if (requestId === previewRequestRef.current) {
-              setSlotPreviews(result.previews || {});
-              setMessage("");
-            }
-            return;
-          } catch (error: any) {
-            lastError = error;
-            if (attempt === 0 && requestId === previewRequestRef.current) {
-              await new Promise((resolve) => window.setTimeout(resolve, 500));
-            }
-          }
-        }
+      if (requestId !== previewRequestRef.current) return;
+      setPreviewBusy(true);
+      try {
+        const result = await api.previewVipOrganizer(payload, controller.signal);
         if (requestId === previewRequestRef.current) {
-          setMessage(`成品预览暂时未更新，已保留上一次预览：${lastError?.message || "请求失败"}`);
+          setSlotPreviews(result.previews || {});
+          setMessage("");
         }
-      }).finally(() => {
+      } catch (error: any) {
+        if (error?.name === "AbortError") return;
+        if (requestId === previewRequestRef.current) {
+          setMessage(`成品预览暂时未更新，已保留上一次预览：${error?.message || "请求失败"}`);
+        }
+      } finally {
         if (requestId === previewRequestRef.current) setPreviewBusy(false);
-      });
-      previewQueueRef.current = queued;
-    }, 520);
-    return () => window.clearTimeout(timer);
+      }
+    }, 320);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [sessionId, slots, info, platform]);
 
   useEffect(() => {
@@ -730,13 +857,19 @@ export default function VipOrganizer() {
     setAdjustmentEditor({ fileName, sourceIndex });
   }
 
-  function saveSlotAdjustment(fileName: string, sourceIndex: number, adjustment: ImageAdjustment, previewUrl?: string) {
+  function saveSlotAdjustment(
+    fileName: string,
+    sourceIndex: number,
+    adjustment: ImageAdjustment,
+    logoColor: LogoColor,
+    previewUrl?: string
+  ) {
     setSlots((current) => current.map((slot) => {
       if (slot.file_name !== fileName) return slot;
       const adjustments = [...(slot.adjustments || [])];
       while (adjustments.length <= sourceIndex) adjustments.push({ ...DEFAULT_ADJUSTMENT });
       adjustments[sourceIndex] = normalizeAdjustment(adjustment);
-      return { ...slot, adjustments };
+      return { ...slot, adjustments, logo_color: logoColor };
     }));
     if (previewUrl) setSlotPreviews((current) => ({ ...current, [fileName]: previewUrl }));
     setAdjustmentEditor(null);
@@ -823,30 +956,6 @@ export default function VipOrganizer() {
         </div>
       </section>
 
-      <section className="panel organizer-platform-panel">
-        <div className="organizer-platform-switcher" aria-label="输出平台">
-          <div>
-            <strong>输出平台</strong>
-            <span>不同平台使用独立的尺寸、模板、文件命名和ZIP目录</span>
-          </div>
-          <div className="organizer-platform-tabs" role="tablist" aria-label="选择输出平台">
-            {ORGANIZER_PLATFORMS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                role="tab"
-                aria-selected={item.id === platform}
-                className={item.id === platform ? "active" : ""}
-                disabled={busy}
-                onClick={() => changePlatform(item.id)}
-              >
-                <span>{item.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </section>
-
       {slots.length > 0 && <>
         <section className="panel organizer-analysis-panel">
           <div className="organizer-analysis-header">
@@ -922,6 +1031,27 @@ export default function VipOrganizer() {
         </section>
 
         <section className="panel organizer-slots-panel">
+          <div className="organizer-platform-switcher" aria-label="输出平台">
+            <div>
+              <strong>输出平台</strong>
+              <span>图片、标签和商品信息通用；这里选择最终输出模板、尺寸、文件名和 ZIP 目录</span>
+            </div>
+            <div className="organizer-platform-tabs" role="tablist" aria-label="选择输出平台">
+              {ORGANIZER_PLATFORMS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={item.id === platform}
+                  className={item.id === platform ? "active" : ""}
+                  disabled={busy}
+                  onClick={() => changePlatform(item.id)}
+                >
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="section-title-row"><div><h2>4. 检查{platform === "jd" ? "京东7个输出位置" : "15个输出位置"}</h2><p>点击成品图或“调整”，可独立裁剪、缩放和移动来源图；模板、文字与原图曝光不会改变。</p></div>{previewBusy && <span className="organizer-preview-status"><LoaderCircle className="spin" size={16} />正在更新成品预览</span>}</div>
           <div className="organizer-slot-grid">
             {slots.map((slot) => {
@@ -982,11 +1112,16 @@ export default function VipOrganizer() {
         sourceIndex={adjustmentEditor.sourceIndex}
         sourceUrl={activeEditorAsset.original_url || activeEditorAsset.preview_url}
         initialPreview={slotPreviews[activeEditorSlot.file_name]}
-        slots={slots}
         productInfo={organizerProductInfo()}
         platform={platform}
         onClose={() => setAdjustmentEditor(null)}
-        onSave={(adjustment, previewUrl) => saveSlotAdjustment(activeEditorSlot.file_name, adjustmentEditor.sourceIndex, adjustment, previewUrl)}
+        onSave={(adjustment, logoColor, previewUrl) => saveSlotAdjustment(
+          activeEditorSlot.file_name,
+          adjustmentEditor.sourceIndex,
+          adjustment,
+          logoColor,
+          previewUrl
+        )}
       />}
     </section>
   );

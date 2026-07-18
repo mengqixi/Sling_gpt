@@ -101,16 +101,14 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         self.assertEqual(transparent.mode, "RGBA")
         self.assertEqual(transparent.getpixel((0, 0))[3], 0)
 
-    def test_detail_page_contains_full_normalized_asset_without_edge_crop(self):
-        source = self._small_catalog_product()
+    def test_detail_page_fills_reference_window_without_changing_source_color(self):
+        source = Image.new("RGB", (320, 480), "#b52226")
         rendered = _detail_showcase_page(source)
-        white = Image.new("RGB", rendered.size, "white")
-        bbox = ImageChops.difference(rendered.crop((0, 150, 750, 750)), white.crop((0, 150, 750, 750))).getbbox()
 
-        self.assertIsNotNone(bbox)
-        assert bbox is not None
-        self.assertGreaterEqual(bbox[0], 55)
-        self.assertLessEqual(bbox[2], 695)
+        self.assertEqual(rendered.getpixel((51, 400)), (255, 255, 255))
+        self.assertEqual(rendered.getpixel((52, 181)), (181, 34, 38))
+        self.assertEqual(rendered.getpixel((694, 703)), (181, 34, 38))
+        self.assertEqual(rendered.getpixel((695, 400)), (255, 255, 255))
 
     def test_template_product_box_allows_upscaling(self):
         canvas = Image.new("RGB", (750, 665), "white")
@@ -240,6 +238,119 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         self.assertIn("同批相对校正", prompt)
         self.assertIn("不得改为detail", prompt)
         self.assertIn("ELLE金属Logo面料近景", prompt)
+        self.assertIn("同批必备视图约束", prompt)
+        self.assertIn("五个不同index", prompt)
+
+    def test_batch_guarantee_recovers_required_views_from_detail_candidates(self):
+        samples = [
+            {
+                "id": 1,
+                "file_name": "半侧.jpg",
+                **metrics(
+                    foreground_ratio=0.16,
+                    bbox_ratio=0.21,
+                    main_component_ratio=1.19,
+                    main_component_fill_ratio=0.76,
+                    main_symmetry_error=0.07,
+                    main_body_side_edge_ratio=1.32,
+                ),
+                "suggested_role": "semi_side",
+                "suggested_tags": [],
+                "role_confidence": 84,
+                "role_reason": "",
+            },
+            {
+                "id": 2,
+                "file_name": "背面.jpg",
+                **metrics(
+                    foreground_ratio=0.15,
+                    bbox_ratio=0.21,
+                    main_component_ratio=1.26,
+                    main_component_fill_ratio=0.73,
+                    main_symmetry_error=0.03,
+                    strict_center_gold_ratio=0.0,
+                    main_body_side_edge_ratio=0.90,
+                ),
+                "suggested_role": "back",
+                "suggested_tags": [],
+                "role_confidence": 82,
+                "role_reason": "",
+            },
+            {
+                "id": 3,
+                "file_name": "全侧.jpg",
+                **metrics(
+                    foreground_ratio=0.06,
+                    bbox_ratio=0.08,
+                    main_component_ratio=0.44,
+                    main_component_fill_ratio=0.72,
+                    main_symmetry_error=0.07,
+                    strict_center_gold_ratio=0.0,
+                    main_body_side_edge_ratio=0.76,
+                ),
+                "suggested_role": "side",
+                "suggested_tags": [],
+                "role_confidence": 90,
+                "role_reason": "",
+            },
+            {
+                "id": 4,
+                "file_name": "正面.jpg",
+                **metrics(
+                    foreground_ratio=0.16,
+                    bbox_ratio=0.23,
+                    main_component_ratio=1.31,
+                    main_component_fill_ratio=0.72,
+                    main_symmetry_error=0.09,
+                    strict_center_gold_ratio=0.0028,
+                    main_body_side_edge_ratio=1.05,
+                ),
+                "suggested_role": "front",
+                "suggested_tags": ["logo", "hardware"],
+                "role_confidence": 58,
+                "role_reason": "",
+            },
+            {
+                "id": 5,
+                "file_name": "开口.jpg",
+                **metrics(
+                    foreground_ratio=0.10,
+                    bbox_ratio=0.19,
+                    main_component_ratio=0.80,
+                    main_component_fill_ratio=0.51,
+                    main_symmetry_error=0.50,
+                    main_body_side_edge_ratio=0.07,
+                    center_gold_ratio=0.08,
+                ),
+                "suggested_role": "detail",
+                "suggested_tags": ["hardware"],
+                "role_confidence": 74,
+                "role_reason": "",
+            },
+            {
+                "id": 6,
+                "file_name": "透明.png",
+                **metrics(
+                    alpha_ratio=0.4,
+                    foreground_ratio=0.39,
+                    bbox_ratio=0.68,
+                    main_component_ratio=1.31,
+                ),
+                "suggested_role": "transparent",
+                "suggested_tags": [],
+                "role_confidence": 99,
+                "role_reason": "",
+            },
+        ]
+
+        _refine_product_classifications(samples)
+
+        roles = {sample["id"]: sample["suggested_role"] for sample in samples}
+        self.assertEqual(roles[1], "semi_side")
+        self.assertEqual(roles[3], "side")
+        self.assertEqual(roles[4], "front")
+        self.assertEqual(roles[5], "top")
+        self.assertEqual(roles[6], "transparent")
 
     def test_export_templates_have_bundled_chinese_font_and_fixed_white_frames(self):
         self.assertTrue(BUNDLED_FONT_PATH.exists())
@@ -255,8 +366,9 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         self.assertEqual(model_page.getpixel((20, 20)), (255, 255, 255))
         self.assertEqual(model_page.getpixel((100, 100)), (181, 34, 38))
         self.assertEqual(detail_page.getpixel((20, 300)), (255, 255, 255))
-        self.assertEqual(detail_page.getpixel((100, 300)), (255, 255, 255))
+        self.assertEqual(detail_page.getpixel((100, 300)), (181, 34, 38))
         self.assertEqual(detail_page.getpixel((375, 300)), (181, 34, 38))
+        self.assertEqual(detail_page.getpixel((700, 300)), (255, 255, 255))
 
     def test_slot_renderer_keeps_model_layouts_separate_from_product_normalization(self):
         source = Image.new("RGB", (320, 480), "#b52226")
