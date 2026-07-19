@@ -41,6 +41,7 @@ class ExportPayload(BaseModel):
     slots: list[dict[str, Any]] = Field(default_factory=list)
     product_info: dict[str, str] = Field(default_factory=dict)
     platform: str = "vip"
+    target_folder: str = "800"
 
 
 class SlotPreviewPayload(ExportPayload):
@@ -191,7 +192,13 @@ def export(payload: ExportPayload):
 @router.post("/preview")
 def preview(payload: ExportPayload):
     try:
-        return render_previews(payload.session_id, payload.slots, payload.product_info, payload.platform)
+        return render_previews(
+            payload.session_id,
+            payload.slots,
+            payload.product_info,
+            payload.platform,
+            payload.target_folder,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -199,6 +206,13 @@ def preview(payload: ExportPayload):
 @router.post("/preview-slot")
 def preview_slot(payload: SlotPreviewPayload):
     try:
-        return render_slot_preview(payload.session_id, payload.slots, payload.product_info, payload.file_name, payload.platform)
+        return render_slot_preview(
+            payload.session_id,
+            payload.slots,
+            payload.product_info,
+            payload.file_name,
+            payload.platform,
+            payload.target_folder,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

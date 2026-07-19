@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import mimetypes
 import base64
+import hashlib
 import io
 import json
 import os
@@ -37,6 +38,8 @@ BUNDLED_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "
 JD_LOGO_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "LibreBodoni-VariableFont_wght.ttf"
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
+PREVIEW_RENDER_VERSION = 2
+MAX_PREVIEW_CACHE_ENTRIES = 45
 
 
 SLOT_DEFINITIONS = [
@@ -2252,14 +2255,96 @@ def _preview_lock(session_id: str) -> Lock:
         return _PREVIEW_LOCKS.setdefault(session_id, Lock())
 
 
+def _preview_product_info(
+    file_name: str,
+    product_info: dict[str, str],
+    platform: str,
+) -> dict[str, str]:
+    if (platform == "vip" and file_name == "401.jpg") or (platform == "jd" and file_name == "5.jpg"):
+        return product_info
+    return {}
+
+
+def _preview_cache_id(
+    file_name: str,
+    slot: dict[str, Any],
+    product_info: dict[str, str],
+    platform: str,
+    target_folder: str = "800",
+) -> str:
+    payload = {
+        "version": PREVIEW_RENDER_VERSION,
+        "platform": platform,
+        "target_folder": target_folder,
+        "file_name": file_name,
+        "image_ids": slot["image_ids"],
+        "adjustments": slot["adjustments"],
+        "logo_color": slot["logo_color"],
+        "product_info": _preview_product_info(file_name, product_info, platform),
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:12]
+
+
+def _render_cached_slot_preview(
+    session_id: str,
+    file_name: str,
+    slot: dict[str, Any],
+    product_info: dict[str, str],
+    platform: str,
+    target_folder: str = "800",
+) -> str | None:
+    preview_id = _preview_cache_id(file_name, slot, product_info, platform, target_folder)
+    folder = _session_result_dir(session_id) / "previews" / preview_id
+    output = folder / file_name
+    if output.is_file():
+        os.utime(folder, None)
+        return f"/api/vip-organizer/previews/{session_id}/{preview_id}/{file_name}"
+
+    image = _render_slot_image(
+        file_name,
+        slot["image_ids"],
+        product_info,
+        slot["adjustments"],
+        platform,
+        target_folder=target_folder,
+        logo_color=slot["logo_color"],
+    )
+    if image is None:
+        return None
+
+    folder.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.stem}-{uuid.uuid4().hex[:8]}{output.suffix}")
+    try:
+        _save_preview_image(image, file_name, temporary)
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return f"/api/vip-organizer/previews/{session_id}/{preview_id}/{file_name}"
+
+
+def _prune_preview_cache(session_id: str) -> None:
+    preview_root = _session_result_dir(session_id) / "previews"
+    if not preview_root.is_dir():
+        return
+    entries = sorted(
+        (path for path in preview_root.iterdir() if path.is_dir()),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for stale in entries[MAX_PREVIEW_CACHE_ENTRIES:]:
+        shutil.rmtree(stale, ignore_errors=True)
+
+
 def render_previews(
     session_id: str,
     slots: list[dict[str, Any]],
     product_info: dict[str, str],
     platform: str = "vip",
+    target_folder: str = "800",
 ) -> dict[str, Any]:
     with _preview_lock(session_id):
-        return _render_previews(session_id, slots, product_info, platform)
+        return _render_previews(session_id, slots, product_info, platform, target_folder)
 
 
 def render_slot_preview(
@@ -2268,6 +2353,7 @@ def render_slot_preview(
     product_info: dict[str, str],
     file_name: str,
     platform: str = "vip",
+    target_folder: str = "800",
 ) -> dict[str, str]:
     slot_definitions = _platform_slot_definitions(platform)
     valid_names = {name for name, _, _, _ in slot_definitions}
@@ -2278,24 +2364,22 @@ def render_slot_preview(
     slot_map = _slot_map(slots, platform)
     _validate_slot_map(session_id, slot_map, platform)
     slot = slot_map.get(file_name, {"image_ids": [], "adjustments": [], "logo_color": "black"})
-    image = _render_slot_image(
+    if platform == "jd" and target_folder not in {"800", "750"}:
+        raise ValueError("京东预览目录必须是 800 或 750")
+    preview_url = _render_cached_slot_preview(
+        session_id,
         file_name,
-        slot["image_ids"],
+        slot,
         product_info,
-        slot["adjustments"],
         platform,
-        logo_color=slot["logo_color"],
+        target_folder,
     )
-    if image is None:
+    if preview_url is None:
         raise ValueError("当前输出位置缺少素材")
-    preview_id = uuid.uuid4().hex[:12]
-    folder = _session_result_dir(session_id) / "previews" / preview_id
-    folder.mkdir(parents=True, exist_ok=True)
-    output = folder / file_name
-    _save_preview_image(image, file_name, output)
+    _prune_preview_cache(session_id)
     return {
         "file_name": file_name,
-        "preview_url": f"/api/vip-organizer/previews/{session_id}/{preview_id}/{file_name}",
+        "preview_url": preview_url,
     }
 
 
@@ -2304,41 +2388,32 @@ def _render_previews(
     slots: list[dict[str, Any]],
     product_info: dict[str, str],
     platform: str = "vip",
+    target_folder: str = "800",
 ) -> dict[str, Any]:
+    if platform == "jd" and target_folder not in {"800", "750"}:
+        raise ValueError("京东预览目录必须是 800 或 750")
     slot_definitions = _platform_slot_definitions(platform)
     slot_map = _slot_map(slots, platform)
     _validate_slot_map(session_id, slot_map, platform)
-    preview_id = uuid.uuid4().hex[:12]
-    preview_root = _session_result_dir(session_id) / "previews"
-    folder = preview_root / preview_id
-    folder.mkdir(parents=True, exist_ok=True)
     previews: dict[str, str] = {}
     missing: list[str] = []
 
     for file_name, _, _, _ in slot_definitions:
         slot = slot_map.get(file_name, {"image_ids": [], "adjustments": [], "logo_color": "black"})
-        image = _render_slot_image(
+        preview_url = _render_cached_slot_preview(
+            session_id,
             file_name,
-            slot["image_ids"],
+            slot,
             product_info,
-            slot["adjustments"],
             platform,
-            logo_color=slot["logo_color"],
+            target_folder,
         )
-        if image is None:
+        if preview_url is None:
             missing.append(file_name)
             continue
-        output = folder / file_name
-        _save_preview_image(image, file_name, output)
-        previews[file_name] = f"/api/vip-organizer/previews/{session_id}/{preview_id}/{file_name}"
+        previews[file_name] = preview_url
 
-    preview_sets = sorted(
-        (path for path in preview_root.iterdir() if path.is_dir()),
-        key=lambda path: path.stat().st_mtime_ns,
-        reverse=True,
-    )
-    for stale in preview_sets[3:]:
-        shutil.rmtree(stale, ignore_errors=True)
+    _prune_preview_cache(session_id)
     return {"previews": previews, "missing": missing}
 
 
