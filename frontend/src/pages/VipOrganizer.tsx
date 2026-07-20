@@ -110,22 +110,58 @@ function slotCanvasSize(size: string, platform?: OrganizerPlatform, targetFolder
   return match ? { width: Number(match[1]), height: Number(match[2]) } : { width: 800, height: 800 };
 }
 
-function slotSafeArea(slot: Slot, platform: OrganizerPlatform, sourceIndex: number) {
-  if (slot.file_name === "401.jpg") return { x: 0.39, y: 0.25, width: 0.52, height: 0.55 };
+function slotPreviewLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex: number, targetFolder: PreviewFolder) {
+  if (platform === "jd") {
+    if (["0-无logo.jpg", "1.jpg", "3.jpg", "4.jpg"].includes(slot.file_name)) {
+      return { x: 0, y: 0, width: 1, height: 1, mode: "cover" as const };
+    }
+    if (slot.file_name === "2.jpg") {
+      return targetFolder === "750"
+        ? { x: 100 / 750, y: 145 / 1000, width: 550 / 750, height: 755 / 1000, mode: "contain" as const }
+        : { x: 100 / 800, y: 135 / 800, width: 600 / 800, height: 565 / 800, mode: "contain" as const };
+    }
+    return { x: 0.15, y: 0.2125, width: 0.7, height: 0.675, mode: "contain" as const };
+  }
+  if (["1.jpg", "50.jpg"].includes(slot.file_name)) {
+    return { x: 0, y: 0, width: 1, height: 1, mode: "cover" as const };
+  }
+  if (slot.file_name === "401.jpg") {
+    return { x: 346 / 800, y: 258 / 800, width: 287 / 800, height: 200 / 800, mode: "contain" as const };
+  }
   if (slot.file_name === "606.jpg") {
     const positions = [
-      { x: 0.08, y: 0.18, width: 0.34, height: 0.28 },
-      { x: 0.58, y: 0.18, width: 0.34, height: 0.28 },
-      { x: 0.08, y: 0.58, width: 0.34, height: 0.28 },
-      { x: 0.58, y: 0.58, width: 0.34, height: 0.28 }
+      { x: 78 / 750, y: 195 / 750, width: 245 / 750, height: 170 / 750, mode: "contain" as const },
+      { x: 427 / 750, y: 195 / 750, width: 245 / 750, height: 170 / 750, mode: "contain" as const },
+      { x: 78 / 750, y: 500 / 750, width: 245 / 750, height: 180 / 750, mode: "contain" as const },
+      { x: 427 / 750, y: 500 / 750, width: 245 / 750, height: 180 / 750, mode: "contain" as const }
     ];
     return positions[sourceIndex] || positions[0];
   }
-  if (["4.jpg", "15.jpg", "604.jpg", "605.jpg"].includes(slot.file_name)) {
-    return { x: 0.065, y: 0.18, width: 0.87, height: 0.74 };
+  if (["4.jpg", "15.jpg"].includes(slot.file_name)) {
+    return { x: 0, y: 0, width: 1, height: 1, mode: "contain" as const };
   }
-  if (platform === "jd") return { x: 0.06, y: 0.06, width: 0.88, height: 0.88 };
-  return { x: 0.07, y: 0.07, width: 0.86, height: 0.86 };
+  if (["601.jpg", "602.jpg", "603.jpg"].includes(slot.file_name)) {
+    return { x: 56 / 750, y: 65 / 750, width: 638 / 750, height: 634 / 750, mode: "cover" as const };
+  }
+  if (["604.jpg", "605.jpg"].includes(slot.file_name)) {
+    return { x: 52 / 750, y: 181 / 750, width: 643 / 750, height: 523 / 750, mode: "cover" as const };
+  }
+  if (slot.file_name === "801.jpg") {
+    return { x: 90 / 750, y: 105 / 750, width: 570 / 750, height: 560 / 750, mode: "contain" as const };
+  }
+  return { x: 0.15, y: 0.2125, width: 0.7, height: 0.675, mode: "contain" as const };
+}
+
+const livePreviewImageCache = new Map<string, HTMLImageElement>();
+
+function livePreviewImage(url: string) {
+  const cached = livePreviewImageCache.get(url);
+  if (cached) return cached;
+  const image = new Image();
+  image.decoding = "async";
+  image.src = url;
+  livePreviewImageCache.set(url, image);
+  return image;
 }
 
 function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, sourceIndex, targetFolder }: {
@@ -147,10 +183,8 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
     const output = slotCanvasSize(slot.size, platform, targetFolder);
     canvas.width = output.width;
     canvas.height = output.height;
-    const image = new Image();
-    const template = templateUrl ? new Image() : null;
-    image.decoding = "async";
-    if (template) template.decoding = "async";
+    const image = livePreviewImage(sourceUrl);
+    const template = templateUrl ? livePreviewImage(templateUrl) : null;
     const draw = () => {
       if (!image.complete || !image.naturalWidth) return;
       if (template && (!template.complete || !template.naturalWidth)) return;
@@ -159,7 +193,7 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       context.fillRect(0, 0, output.width, output.height);
       if (template) context.drawImage(template, 0, 0, output.width, output.height);
 
-      const area = slotSafeArea(slot, platform, sourceIndex);
+      const area = slotPreviewLayout(slot, platform, sourceIndex, targetFolder);
       const areaX = area.x * output.width;
       const areaY = area.y * output.height;
       const areaWidth = area.width * output.width;
@@ -168,11 +202,13 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       const sourceY = Math.max(0, Math.min(image.naturalHeight - 1, draft.crop_y * image.naturalHeight));
       const sourceWidth = Math.max(1, Math.min(image.naturalWidth - sourceX, draft.crop_width * image.naturalWidth));
       const sourceHeight = Math.max(1, Math.min(image.naturalHeight - sourceY, draft.crop_height * image.naturalHeight));
-      const fitScale = Math.min(areaWidth / sourceWidth, areaHeight / sourceHeight);
+      const fitScale = area.mode === "cover"
+        ? Math.max(areaWidth / sourceWidth, areaHeight / sourceHeight)
+        : Math.min(areaWidth / sourceWidth, areaHeight / sourceHeight);
       const drawWidth = sourceWidth * fitScale * draft.zoom;
       const drawHeight = sourceHeight * fitScale * draft.zoom;
-      const drawX = areaX + (areaWidth - drawWidth) / 2 + draft.offset_x * areaWidth * 0.2;
-      const drawY = areaY + (areaHeight - drawHeight) / 2 + draft.offset_y * areaHeight * 0.2;
+      const drawX = areaX + (areaWidth - drawWidth) / 2 + draft.offset_x * areaWidth;
+      const drawY = areaY + (areaHeight - drawHeight) / 2 + draft.offset_y * areaHeight;
 
       context.fillStyle = "#fff";
       context.fillRect(areaX, areaY, areaWidth, areaHeight);
@@ -205,13 +241,12 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       context.fillText("模板安全区（确认预览后不会写入成品）", areaX + 8, Math.max(18, areaY - 8));
       context.restore();
     };
-    image.onload = draw;
-    if (template) template.onload = draw;
-    image.src = sourceUrl;
-    if (template) template.src = templateUrl || "";
+    image.addEventListener("load", draw);
+    if (template) template.addEventListener("load", draw);
+    draw();
     return () => {
-      image.onload = null;
-      if (template) template.onload = null;
+      image.removeEventListener("load", draw);
+      if (template) template.removeEventListener("load", draw);
     };
   }, [draft, platform, slot.file_name, slot.size, sourceIndex, sourceUrl, targetFolder, templateUrl]);
 
@@ -597,7 +632,7 @@ function SlotAdjustmentEditor({
               onPointerUp={finishMove}
               onPointerCancel={finishMove}
             >
-              {previewSynced && renderedPreview
+              {false && previewSynced && renderedPreview
                 ? <img src={renderedPreview} alt={`${slot.file_name} 模板预览`} draggable={false} />
                 : <LiveSlotPreview
                     sourceUrl={sourceUrl}
@@ -668,6 +703,7 @@ export default function VipOrganizer() {
   const [assets, setAssets] = useState<Record<string, any[]>>({ product: [], model: [], tag: [] });
   const [assetRoles, setAssetRoles] = useState<Record<number, string>>({});
   const [assetTags, setAssetTags] = useState<Record<number, string[]>>({});
+  const [manualAssetIds, setManualAssetIds] = useState<Set<number>>(() => new Set());
   const [apiRoleNotes, setApiRoleNotes] = useState<Record<number, ApiRoleNote>>({});
   const [analysisConfigs, setAnalysisConfigs] = useState<any[]>([]);
   const [analysisConfigId, setAnalysisConfigId] = useState<number | "">("");
@@ -744,10 +780,11 @@ export default function VipOrganizer() {
     const timer = window.setTimeout(async () => {
       if (requestId !== previewRequestRef.current) return;
       setPreviewBusy(true);
+      let partialPreviewFailure = false;
       try {
         if (changedTargets.length > 5) {
           const folders = [...new Set(changedTargets.map((target) => target.targetFolder))];
-          const groupedResults = await Promise.all(folders.map(async (targetFolder) => {
+          const groupedResults = await Promise.allSettled(folders.map(async (targetFolder) => {
             const result = await api.previewVipOrganizer({
               session_id: sessionId,
               slots,
@@ -762,17 +799,30 @@ export default function VipOrganizer() {
             ));
           }));
           if (requestId === previewRequestRef.current) {
+            const successfulGroups = groupedResults
+              .filter((result): result is PromiseFulfilledResult<(readonly [string, string])[]> => result.status === "fulfilled")
+              .flatMap((result) => result.value);
+            const successfulKeys = new Set(successfulGroups.map(([key]) => key));
             setSlotPreviews((current) => ({
               ...current,
-              ...Object.fromEntries(groupedResults.flat())
+              ...Object.fromEntries(successfulGroups)
             }));
             slotPreviewSignaturesRef.current = {
               ...slotPreviewSignaturesRef.current,
-              ...signatures
+              ...Object.fromEntries(
+                [...successfulKeys]
+                  .filter((key) => signatures[key])
+                  .map((key) => [key, signatures[key]])
+              )
             };
+            const failedCount = groupedResults.filter((result) => result.status === "rejected").length;
+            if (failedCount) {
+              partialPreviewFailure = true;
+              setMessage(`${failedCount} 组预览暂未生成，其他预览已更新`);
+            }
           }
         } else {
-          const results = await Promise.all(changedTargets.map(async (target) => {
+          const results = await Promise.allSettled(changedTargets.map(async (target) => {
             const result = await api.previewVipOrganizerSlot({
               session_id: sessionId,
               slots: [target.slot],
@@ -784,14 +834,27 @@ export default function VipOrganizer() {
             return [target.key, result.preview_url] as const;
           }));
           if (requestId === previewRequestRef.current) {
-            setSlotPreviews((current) => ({ ...current, ...Object.fromEntries(results) }));
+            const successfulResults = results
+              .filter((result): result is PromiseFulfilledResult<readonly [string, string]> => result.status === "fulfilled" && typeof result.value[1] === "string")
+              .map((result) => result.value);
+            const successfulKeys = new Set(successfulResults.map(([key]) => key));
+            setSlotPreviews((current) => ({ ...current, ...Object.fromEntries(successfulResults) }));
             slotPreviewSignaturesRef.current = {
               ...slotPreviewSignaturesRef.current,
-              ...Object.fromEntries(changedTargets.map((target) => [target.key, signatures[target.key]]))
+              ...Object.fromEntries(
+                [...successfulKeys]
+                  .filter((key) => signatures[key])
+                  .map((key) => [key, signatures[key]])
+              )
             };
+            const failedCount = results.length - successfulResults.length;
+            if (failedCount) {
+              partialPreviewFailure = true;
+              setMessage(`${failedCount} 个预览暂未生成，其他预览已更新`);
+            }
           }
         }
-        if (requestId === previewRequestRef.current) setMessage("");
+        if (requestId === previewRequestRef.current && !partialPreviewFailure) setMessage("");
       } catch (error: any) {
         if (error?.name === "AbortError") return;
         if (requestId === previewRequestRef.current) {
@@ -874,6 +937,7 @@ export default function VipOrganizer() {
     setAssets({ product: [], model: [], tag: [] });
     setAssetRoles({});
     setAssetTags({});
+    setManualAssetIds(new Set());
     assetRolesRef.current = {};
     assetTagsRef.current = {};
     setApiRoleNotes({});
@@ -1035,6 +1099,7 @@ export default function VipOrganizer() {
       assetTagsRef.current = nextTags;
       setAssetRoles(nextRoles);
       setAssetTags(nextTags);
+      setManualAssetIds(new Set());
       setApiRoleNotes(Object.fromEntries(apiResult.items.map((item: any) => [
         item.image_id,
         {
@@ -1077,6 +1142,12 @@ export default function VipOrganizer() {
     }
     assetRolesRef.current = next;
     setAssetRoles(next);
+    setManualAssetIds((current) => {
+      const updated = new Set(current);
+      if (role === "auto") updated.delete(imageId);
+      else updated.add(imageId);
+      return updated;
+    });
     scheduleReanalyze(next, assetTagsRef.current);
     setMessage("固定标签已修改，正在只更新受影响的输出位置。");
   }
@@ -1091,6 +1162,7 @@ export default function VipOrganizer() {
     const next = { ...assetTagsRef.current, [asset.id]: nextTags };
     assetTagsRef.current = next;
     setAssetTags(next);
+    setManualAssetIds((current) => new Set(current).add(asset.id));
     scheduleReanalyze(assetRolesRef.current, next);
     setMessage("细节标签已修改，正在只更新受影响的输出位置。");
   }
@@ -1100,6 +1172,13 @@ export default function VipOrganizer() {
     delete next[imageId];
     assetTagsRef.current = next;
     setAssetTags(next);
+    if (!assetRolesRef.current[imageId]) {
+      setManualAssetIds((current) => {
+        const updated = new Set(current);
+        updated.delete(imageId);
+        return updated;
+      });
+    }
     scheduleReanalyze(assetRolesRef.current, next);
   }
 
@@ -1187,7 +1266,7 @@ export default function VipOrganizer() {
   }
 
   function isManualAsset(imageId: number) {
-    return Boolean(assetRoles[imageId] || assetTags[imageId] !== undefined);
+    return manualAssetIds.has(imageId);
   }
 
   function assetOptionLabel(asset: any, kind: string) {
