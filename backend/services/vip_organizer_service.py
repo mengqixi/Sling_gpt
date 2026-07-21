@@ -39,7 +39,7 @@ JD_LOGO_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "
 JD_PHONE_REFERENCE_PATH = Path(__file__).resolve().parents[1] / "assets" / "iphone_reference.png"
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
-PREVIEW_RENDER_VERSION = 4
+PREVIEW_RENDER_VERSION = 5
 MAX_PREVIEW_CACHE_ENTRIES = 96
 
 
@@ -1513,6 +1513,20 @@ def _crop_source(source: Image.Image, adjustment: dict[str, Any] | None) -> Imag
     return source.crop((left, top, right, bottom))
 
 
+def _has_manual_crop(adjustment: dict[str, Any] | None) -> bool:
+    normalized = _normalize_adjustment(adjustment)
+    return (
+        normalized["crop_x"] > 0.0001
+        or normalized["crop_y"] > 0.0001
+        or normalized["crop_width"] < 0.9999
+        or normalized["crop_height"] < 0.9999
+    )
+
+
+def _crop_aware_mode(adjustment: dict[str, Any] | None, default: str) -> str:
+    return "contain" if _has_manual_crop(adjustment) else default
+
+
 def _crop_cache_key(adjustment: dict[str, Any] | None) -> tuple[int, int, int, int]:
     normalized = _normalize_adjustment(adjustment)
     return tuple(
@@ -1709,7 +1723,7 @@ def _model_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None 
     """Match the 601-603 reference: cropped model photo with a fixed white frame."""
     canvas = Image.new("RGB", (750, 750), "white")
     cropped = _crop_source(source.convert("RGB"), adjustment)
-    _paste_layer(canvas, cropped, (56, 65, 694, 699), adjustment, mode="cover")
+    _paste_layer(canvas, cropped, (56, 65, 694, 699), adjustment, mode=_crop_aware_mode(adjustment, "cover"))
     return canvas
 
 
@@ -1722,7 +1736,7 @@ def _detail_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None
     title_box = draw.textbbox((0, 0), title, font=title_font)
     draw.text(((750 - (title_box[2] - title_box[0])) / 2, 70), title, font=title_font, fill="#c4c4c4")
     cropped = _crop_source(source.convert("RGB"), adjustment)
-    _paste_layer(canvas, cropped, (52, 181, 695, 704), adjustment, mode="cover")
+    _paste_layer(canvas, cropped, (52, 181, 695, 704), adjustment, mode=_crop_aware_mode(adjustment, "cover"))
     return canvas
 
 
@@ -1812,7 +1826,13 @@ def _jd_model_page(
     logo_color: str = "black",
 ) -> Image.Image:
     canvas = Image.new("RGB", size, "white")
-    _paste_layer(canvas, _crop_source(source.convert("RGB"), adjustment), (0, 0, *size), adjustment, mode="cover")
+    _paste_layer(
+        canvas,
+        _crop_source(source.convert("RGB"), adjustment),
+        (0, 0, *size),
+        adjustment,
+        mode=_crop_aware_mode(adjustment, "cover"),
+    )
     if with_logo:
         _draw_jd_elle_logo(canvas, size, logo_color)
     return canvas
@@ -1828,7 +1848,13 @@ def _jd_product_page(
 ) -> Image.Image:
     canvas = Image.new("RGB", size, "white")
     if detail:
-        _paste_layer(canvas, _crop_source(source.convert("RGB"), adjustment), (0, 0, *size), adjustment, mode="cover")
+        _paste_layer(
+            canvas,
+            _crop_source(source.convert("RGB"), adjustment),
+            (0, 0, *size),
+            adjustment,
+            mode=_crop_aware_mode(adjustment, "cover"),
+        )
     else:
         if size == (800, 800):
             box = (100, 135, 700, 700)
@@ -2079,6 +2105,14 @@ def _jd_size_comparison_page(
     preferred_product_width = width * 0.35 * max(0.82, min(1.08, length_mm / 205.0))
     target_body_width = min(product_max_width, preferred_product_width)
     product_scale = min(target_body_width / body_width, product_max_height / body_height)
+    if _has_manual_crop(adjustment):
+        # A designer crop defines the complete visible region. Fit that region as
+        # a whole so sparse handles or straps are not clipped by body-only sizing.
+        product_scale = min(
+            product_scale,
+            width * 0.43 / max(1, cutout.width),
+            height * 0.58 / max(1, cutout.height),
+        )
     product_scale *= normalized["zoom"]
     resized_width = max(1, round(cutout.width * product_scale))
     resized_height = max(1, round(cutout.height * product_scale))
@@ -2209,7 +2243,7 @@ def _slot_map(slots: list[dict[str, Any]], platform: str = "vip") -> dict[str, d
     if platform == "jd" and "0-无logo.jpg" in slot_map:
         slot_map.setdefault("1.jpg", {"image_ids": [], "adjustments": [], "logo_color": "black"})
         slot_map["1.jpg"]["image_ids"] = list(slot_map["0-无logo.jpg"]["image_ids"])
-    elif "1.jpg" in slot_map:
+    elif platform != "jd" and "1.jpg" in slot_map:
         slot_map.setdefault("50.jpg", {"image_ids": [], "adjustments": [], "logo_color": "black"})
         slot_map["50.jpg"]["image_ids"] = list(slot_map["1.jpg"]["image_ids"])
     return slot_map
@@ -2265,13 +2299,13 @@ def _render_slot_image(
     source = _load_image(image_ids[0])
     if file_name == "1.jpg":
         canvas = Image.new("RGB", (800, 800), "white")
-        _paste_layer(canvas, _crop_source(source.convert("RGB"), adjustment), (0, 0, 800, 800), adjustment, mode="cover")
+        _paste_layer(canvas, _crop_source(source.convert("RGB"), adjustment), (0, 0, 800, 800), adjustment, mode=_crop_aware_mode(adjustment, "cover"))
         return canvas
     if file_name == "30.png":
         return _normalized_product_page(source, transparent=True, adjustment=adjustment)
     if file_name == "50.jpg":
         canvas = Image.new("RGB", (950, 1200), "white")
-        _paste_layer(canvas, _crop_source(source.convert("RGB"), adjustment), (0, 0, 950, 1200), adjustment, mode="cover")
+        _paste_layer(canvas, _crop_source(source.convert("RGB"), adjustment), (0, 0, 950, 1200), adjustment, mode=_crop_aware_mode(adjustment, "cover"))
         return canvas
     if file_name in {"4.jpg", "15.jpg"}:
         canvas = Image.new("RGB", (800, 800), "white")

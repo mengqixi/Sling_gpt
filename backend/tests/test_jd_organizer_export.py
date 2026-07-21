@@ -88,3 +88,18 @@ def test_jd_logo_color_is_stored_per_output_slot():
 
     assert slot_map["1.jpg"]["logo_color"] == "white"
     assert slot_map["2.jpg"]["logo_color"] == "black"
+
+
+def test_jd_single_model_preview_does_not_create_vip_model_slot():
+    slot_map = service._slot_map(
+        [{"file_name": "1.jpg", "image_ids": [7], "adjustments": [], "logo_color": "white"}],
+        "jd",
+    )
+
+    assert slot_map["1.jpg"]["image_ids"] == [7]
+    assert "50.jpg" not in slot_map
+
+
+def test_manual_crop_switches_cover_templates_to_contain():
+    assert service._crop_aware_mode(None, "cover") == "cover"
+    assert service._crop_aware_mode({"crop_y": 0.1, "crop_height": 0.8}, "cover") == "contain"

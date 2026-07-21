@@ -349,7 +349,7 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       const sourceY = Math.max(0, Math.min(image.naturalHeight - 1, bounds.top + draft.crop_y * contentHeight));
       const sourceWidth = Math.max(1, Math.min(image.naturalWidth - sourceX, draft.crop_width * contentWidth));
       const sourceHeight = Math.max(1, Math.min(image.naturalHeight - sourceY, draft.crop_height * contentHeight));
-      const fitScale = area.mode === "cover"
+      const fitScale = area.mode === "cover" && !hasManualCrop
         ? Math.max(areaWidth / sourceWidth, areaHeight / sourceHeight)
         : Math.min(areaWidth / sourceWidth, areaHeight / sourceHeight);
       const drawWidth = sourceWidth * fitScale * draft.zoom;
@@ -805,14 +805,13 @@ function SlotAdjustmentEditor({
     });
   }
 
-  function selectComparisonTarget(target: "product" | "phone", showRuler: boolean) {
-    setMoveTarget(target);
-    applyDraft({
-      ...draftRef.current,
-      ...(target === "product"
-        ? { product_show_ruler: showRuler }
-        : { phone_show_ruler: showRuler })
-    });
+  function toggleComparisonRuler() {
+    const current = draftRef.current;
+    if (moveTarget === "phone") {
+      applyDraft({ ...current, phone_show_ruler: current.phone_show_ruler === false });
+    } else {
+      applyDraft({ ...current, product_show_ruler: current.product_show_ruler === false });
+    }
   }
 
   function reset() {
@@ -974,10 +973,11 @@ function SlotAdjustmentEditor({
         <div className="slot-adjustment-controls">
           {isPhoneComparison && <div className="slot-phone-controls" role="group" aria-label="手机对比调整">
             <span>调整对象</span>
-            <button type="button" className={moveTarget === "product" && draft.product_show_ruler === false ? "active-tool" : ""} onClick={() => selectComparisonTarget("product", false)}>包</button>
-            <button type="button" className={moveTarget === "product" && draft.product_show_ruler !== false ? "active-tool" : ""} onClick={() => selectComparisonTarget("product", true)}>包和标线</button>
-            <button type="button" className={moveTarget === "phone" && draft.phone_show_ruler === false ? "active-tool" : ""} onClick={() => selectComparisonTarget("phone", false)}>手机</button>
-            <button type="button" className={moveTarget === "phone" && draft.phone_show_ruler !== false ? "active-tool" : ""} onClick={() => selectComparisonTarget("phone", true)}>手机和标线</button>
+            <button type="button" className={moveTarget === "product" ? "active-tool" : ""} onClick={() => setMoveTarget("product")}>商品图</button>
+            <button type="button" className={moveTarget === "phone" ? "active-tool" : ""} onClick={() => setMoveTarget("phone")}>手机</button>
+            <button type="button" className="ruler-toggle" onClick={toggleComparisonRuler}>
+              {moveTarget === "phone" ? (draft.phone_show_ruler === false ? "显示手机标线" : "隐藏手机标线") : (draft.product_show_ruler === false ? "显示商品标线" : "隐藏商品标线")}
+            </button>
             <span>对齐</span>
             <button type="button" className={(draft.phone_alignment || "center") === "center" ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_alignment: "center" })}>中心同高</button>
             <button type="button" className={draft.phone_alignment === "bottom" ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_alignment: "bottom" })}>底部齐平</button>
@@ -1741,12 +1741,19 @@ export default function VipOrganizer() {
     };
     setAdjustmentEditor(null);
     const cached = platformWorkspaceRef.current[nextPlatform];
-    if (cached) {
+    const cachedSlots = cached?.slots || [];
+    const cachedTargets = cachedSlots.flatMap((slot) =>
+      previewFoldersForSlot(slot, nextPlatform).map((targetFolder) => slotPreviewKey(nextPlatform, slot.file_name, targetFolder))
+    );
+    const cachedIsComplete = Boolean(cached && cachedTargets.length > 0 && cachedTargets.every((key) => Boolean(cached.previews[key])));
+    if (cached && cachedIsComplete) {
       setSlots(cached.slots);
       setSlotPreviews({ ...cached.previews });
-      slotPreviewSignaturesRef.current = { ...cached.signatures };
+      // Keep the last images visible while forcing the preview effect to verify
+      // every slot for the platform being restored.
+      slotPreviewSignaturesRef.current = {};
       setPlatform(nextPlatform);
-      setMessage(`已切换到${nextPlatform === "jd" ? "京东" : "唯品会"}，直接恢复该平台上次预览。`);
+      setMessage(`已切换到${nextPlatform === "jd" ? "京东" : "唯品会"}，正在验证全部预览。`);
       window.requestAnimationFrame(() => window.scrollTo({ top: scrollTop, left: 0, behavior: "auto" }));
       return;
     }
