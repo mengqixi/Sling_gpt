@@ -39,7 +39,7 @@ JD_LOGO_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "
 JD_PHONE_REFERENCE_PATH = Path(__file__).resolve().parents[1] / "assets" / "iphone_reference.png"
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
-PREVIEW_RENDER_VERSION = 3
+PREVIEW_RENDER_VERSION = 4
 MAX_PREVIEW_CACHE_ENTRIES = 96
 
 
@@ -1496,6 +1496,8 @@ def _normalize_adjustment(value: dict[str, Any] | None) -> dict[str, Any]:
         "phone_offset_x": number("phone_offset_x", 0.0, -1.5, 1.5),
         "phone_offset_y": number("phone_offset_y", 0.0, -1.5, 1.5),
         "phone_alignment": "bottom" if value.get("phone_alignment") == "bottom" else "center",
+        "product_show_ruler": value.get("product_show_ruler") is not False,
+        "phone_show_ruler": value.get("phone_show_ruler") is not False,
     }
 
 
@@ -2124,40 +2126,42 @@ def _jd_size_comparison_page(
     )
 
     ruler_gap = max(28, round(width * 0.045))
-    horizontal_y = min(height - 70, rendered_body[3] + ruler_gap)
-    _draw_jd_dimension_bar(
-        canvas,
-        (rendered_body[0], horizontal_y),
-        (rendered_body[2], horizontal_y),
-        _dimension_mm(product_info.get("product_length", "")),
-    )
-    vertical_x = max(30, rendered_body[0] - ruler_gap)
-    _draw_jd_dimension_bar(
-        canvas,
-        (vertical_x, rendered_body[1]),
-        (vertical_x, rendered_body[3]),
-        _dimension_mm(product_info.get("product_height", "")),
-        vertical=True,
-    )
+    if normalized["product_show_ruler"]:
+        horizontal_y = min(height - 70, rendered_body[3] + ruler_gap)
+        _draw_jd_dimension_bar(
+            canvas,
+            (rendered_body[0], horizontal_y),
+            (rendered_body[2], horizontal_y),
+            _dimension_mm(product_info.get("product_length", "")),
+        )
+        vertical_x = max(30, rendered_body[0] - ruler_gap)
+        _draw_jd_dimension_bar(
+            canvas,
+            (vertical_x, rendered_body[1]),
+            (vertical_x, rendered_body[3]),
+            _dimension_mm(product_info.get("product_height", "")),
+            vertical=True,
+        )
 
-    phone_ruler_x = min(width - round(width * 0.10), phone_box[2] + max(28, round(width * 0.055)))
-    _draw_jd_dimension_bar(
-        canvas,
-        (phone_ruler_x, phone_box[1]),
-        (phone_ruler_x, phone_box[3]),
-        "163mm",
-        vertical=True,
-        vertical_label_side="right",
-    )
-    label_font = _font(max(13, round(min(size) * 0.02)))
-    phone_label = "iPhone 16 Pro Max"
-    label_box = draw.textbbox((0, 0), phone_label, font=label_font)
-    draw.text(
-        (round((phone_box[0] + phone_box[2] - (label_box[2] - label_box[0])) / 2), phone_box[3] + 12),
-        phone_label,
-        font=label_font,
-        fill="#555555",
-    )
+    if normalized["phone_show_ruler"]:
+        phone_ruler_x = min(width - round(width * 0.10), phone_box[2] + max(28, round(width * 0.055)))
+        _draw_jd_dimension_bar(
+            canvas,
+            (phone_ruler_x, phone_box[1]),
+            (phone_ruler_x, phone_box[3]),
+            "163mm",
+            vertical=True,
+            vertical_label_side="right",
+        )
+        label_font = _font(max(13, round(min(size) * 0.02)))
+        phone_label = "iPhone 16 Pro Max"
+        label_box = draw.textbbox((0, 0), phone_label, font=label_font)
+        draw.text(
+            (round((phone_box[0] + phone_box[2] - (label_box[2] - label_box[0])) / 2), phone_box[3] + 12),
+            phone_label,
+            font=label_font,
+            fill="#555555",
+        )
     return canvas
 
 

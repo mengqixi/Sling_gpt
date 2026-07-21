@@ -38,6 +38,8 @@ type ImageAdjustment = {
   phone_offset_x?: number;
   phone_offset_y?: number;
   phone_alignment?: "center" | "bottom";
+  product_show_ruler?: boolean;
+  phone_show_ruler?: boolean;
 };
 
 type ApiRoleNote = {
@@ -94,7 +96,9 @@ const DEFAULT_ADJUSTMENT: ImageAdjustment = {
   phone_scale: 1,
   phone_offset_x: 0,
   phone_offset_y: 0,
-  phone_alignment: "center"
+  phone_alignment: "center",
+  product_show_ruler: true,
+  phone_show_ruler: true
 };
 
 function normalizeAdjustment(value?: Partial<ImageAdjustment>): ImageAdjustment {
@@ -203,6 +207,16 @@ function slotSafeAreaLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex
   return slotPreviewLayout(slot, platform, sourceIndex, targetFolder);
 }
 
+function slotEditorSafeAreaLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex: number, targetFolder: PreviewFolder) {
+  if (platform === "vip" && ["4.jpg", "30.png", "401.jpg", "604.jpg", "606.jpg"].includes(slot.file_name)) {
+    return { x: 0.04, y: 0.04, width: 0.92, height: 0.92 };
+  }
+  if (platform === "jd" && ["2.jpg", "5.jpg", "透明.png"].includes(slot.file_name)) {
+    return { x: 0.04, y: 0.04, width: 0.92, height: 0.92 };
+  }
+  return slotSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
+}
+
 function SlotSafeAreaOverlay({ slot, platform, sourceIndex, targetFolder }: {
   slot: Slot;
   platform: OrganizerPlatform;
@@ -210,7 +224,7 @@ function SlotSafeAreaOverlay({ slot, platform, sourceIndex, targetFolder }: {
   targetFolder: PreviewFolder;
 }) {
   const output = slotCanvasSize(slot.size, platform, targetFolder);
-  const area = slotSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
+  const area = slotEditorSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
   const x = area.x * output.width;
   const y = area.y * output.height;
   const width = area.width * output.width;
@@ -224,7 +238,7 @@ function SlotSafeAreaOverlay({ slot, platform, sourceIndex, targetFolder }: {
     aria-hidden="true"
   >
     <rect x={x} y={y} width={width} height={height} />
-    <text x={x + 8} y={labelY}>模板安全区</text>
+    <text x={x + 8} y={labelY}>调整安全区</text>
   </svg>;
 }
 
@@ -363,6 +377,44 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       context.restore();
 
       if (platform === "jd" && slot.file_name === "5.jpg") {
+        if (draft.product_show_ruler !== false) {
+          const rulerGap = Math.max(22, output.width * 0.045);
+          const horizontalY = Math.min(output.height - 34, drawY + drawHeight + rulerGap);
+          const verticalX = Math.max(18, drawX - rulerGap);
+          context.save();
+          context.strokeStyle = "#777";
+          context.fillStyle = "#666";
+          context.lineWidth = Math.max(1, output.width * 0.002);
+          context.font = `500 ${Math.max(12, Math.round(output.width * 0.017))}px sans-serif`;
+          context.beginPath();
+          context.moveTo(drawX, horizontalY);
+          context.lineTo(drawX + drawWidth, horizontalY);
+          context.moveTo(drawX, horizontalY - 7);
+          context.lineTo(drawX, horizontalY + 7);
+          context.moveTo(drawX + drawWidth, horizontalY - 7);
+          context.lineTo(drawX + drawWidth, horizontalY + 7);
+          context.moveTo(verticalX, drawY);
+          context.lineTo(verticalX, drawY + drawHeight);
+          context.moveTo(verticalX - 7, drawY);
+          context.lineTo(verticalX + 7, drawY);
+          context.moveTo(verticalX - 7, drawY + drawHeight);
+          context.lineTo(verticalX + 7, drawY + drawHeight);
+          context.stroke();
+          const lengthValue = Number.parseFloat(productInfo.product_length || "");
+          const heightValue = Number.parseFloat(productInfo.product_height || "");
+          const lengthLabel = Number.isFinite(lengthValue) ? `${Math.round(lengthValue * 10)}mm` : "200mm";
+          const heightLabel = Number.isFinite(heightValue) ? `${Math.round(heightValue * 10)}mm` : "";
+          context.textAlign = "center";
+          context.fillText(lengthLabel, drawX + drawWidth / 2, horizontalY + 22);
+          if (heightLabel) {
+            context.save();
+            context.translate(verticalX - 12, drawY + drawHeight / 2);
+            context.rotate(-Math.PI / 2);
+            context.fillText(heightLabel, 0, 0);
+            context.restore();
+          }
+          context.restore();
+        }
         const heightValue = Number.parseFloat(productInfo.product_height || "") || 75;
         const bodyHeight = Math.max(40, drawHeight * 0.68);
         const phoneHeight = Math.max(output.height * 0.095, Math.min(output.height * 0.34, bodyHeight * (163 / heightValue) * 0.7 * (draft.phone_scale || 1)));
@@ -379,22 +431,28 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         if (phoneReference?.complete && phoneReference.naturalWidth) {
           context.drawImage(phoneReference, phoneLeft, adjustedPhoneTop, pairWidth, phoneHeight);
         }
-        const phoneRight = phoneLeft + pairWidth;
-        const phoneRulerX = Math.min(output.width * 0.94, phoneRight + output.width * 0.055);
-        context.strokeStyle = "#777";
-        context.lineWidth = Math.max(1, output.width * 0.002);
-        context.beginPath();
-        context.moveTo(phoneRulerX, adjustedPhoneTop);
-        context.lineTo(phoneRulerX, adjustedPhoneTop + phoneHeight);
-        context.moveTo(phoneRulerX - 7, adjustedPhoneTop);
-        context.lineTo(phoneRulerX + 7, adjustedPhoneTop);
-        context.moveTo(phoneRulerX - 7, adjustedPhoneTop + phoneHeight);
-        context.lineTo(phoneRulerX + 7, adjustedPhoneTop + phoneHeight);
-        context.stroke();
+        if (draft.phone_show_ruler !== false) {
+          const phoneRight = phoneLeft + pairWidth;
+          const phoneRulerX = Math.min(output.width * 0.94, phoneRight + output.width * 0.055);
+          context.strokeStyle = "#777";
+          context.fillStyle = "#666";
+          context.lineWidth = Math.max(1, output.width * 0.002);
+          context.beginPath();
+          context.moveTo(phoneRulerX, adjustedPhoneTop);
+          context.lineTo(phoneRulerX, adjustedPhoneTop + phoneHeight);
+          context.moveTo(phoneRulerX - 7, adjustedPhoneTop);
+          context.lineTo(phoneRulerX + 7, adjustedPhoneTop);
+          context.moveTo(phoneRulerX - 7, adjustedPhoneTop + phoneHeight);
+          context.lineTo(phoneRulerX + 7, adjustedPhoneTop + phoneHeight);
+          context.stroke();
+          context.font = `500 ${Math.max(12, Math.round(output.width * 0.017))}px sans-serif`;
+          context.textAlign = "center";
+          context.fillText("iPhone 16 Pro Max", phoneLeft + pairWidth / 2, adjustedPhoneTop + phoneHeight + 22);
+        }
         context.restore();
       }
 
-      const safeArea = slotSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
+      const safeArea = slotEditorSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
       const safeX = safeArea.x * output.width;
       const safeY = safeArea.y * output.height;
       const safeWidth = safeArea.width * output.width;
@@ -408,7 +466,7 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       context.fillRect(safeX, safeY, safeWidth, safeHeight);
       context.fillStyle = "rgba(27, 91, 73, .82)";
       context.font = `600 ${Math.max(13, Math.round(output.width * 0.018))}px sans-serif`;
-      context.fillText("模板安全区（确认预览后不会写入成品）", safeX + 8, Math.max(18, safeY - 8));
+      context.fillText("调整安全区（确认预览后不会写入成品）", safeX + 8, Math.max(18, safeY - 8));
       context.restore();
     };
     image.addEventListener("load", draw);
@@ -747,6 +805,16 @@ function SlotAdjustmentEditor({
     });
   }
 
+  function selectComparisonTarget(target: "product" | "phone", showRuler: boolean) {
+    setMoveTarget(target);
+    applyDraft({
+      ...draftRef.current,
+      ...(target === "product"
+        ? { product_show_ruler: showRuler }
+        : { phone_show_ruler: showRuler })
+    });
+  }
+
   function reset() {
     logoColorRef.current = "black";
     setLogoColor("black");
@@ -906,8 +974,10 @@ function SlotAdjustmentEditor({
         <div className="slot-adjustment-controls">
           {isPhoneComparison && <div className="slot-phone-controls" role="group" aria-label="手机对比调整">
             <span>调整对象</span>
-            <button type="button" className={moveTarget === "product" ? "active-tool" : ""} onClick={() => setMoveTarget("product")}>包</button>
-            <button type="button" className={moveTarget === "phone" ? "active-tool" : ""} onClick={() => setMoveTarget("phone")}>手机和标线</button>
+            <button type="button" className={moveTarget === "product" && draft.product_show_ruler === false ? "active-tool" : ""} onClick={() => selectComparisonTarget("product", false)}>包</button>
+            <button type="button" className={moveTarget === "product" && draft.product_show_ruler !== false ? "active-tool" : ""} onClick={() => selectComparisonTarget("product", true)}>包和标线</button>
+            <button type="button" className={moveTarget === "phone" && draft.phone_show_ruler === false ? "active-tool" : ""} onClick={() => selectComparisonTarget("phone", false)}>手机</button>
+            <button type="button" className={moveTarget === "phone" && draft.phone_show_ruler !== false ? "active-tool" : ""} onClick={() => selectComparisonTarget("phone", true)}>手机和标线</button>
             <span>对齐</span>
             <button type="button" className={(draft.phone_alignment || "center") === "center" ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_alignment: "center" })}>中心同高</button>
             <button type="button" className={draft.phone_alignment === "bottom" ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_alignment: "bottom" })}>底部齐平</button>
@@ -971,6 +1041,7 @@ export default function VipOrganizer() {
   const [message, setMessage] = useState("");
   const [slotPreviews, setSlotPreviews] = useState<Record<string, string>>({});
   const [previewBusy, setPreviewBusy] = useState(false);
+  const [platformSwitching, setPlatformSwitching] = useState(false);
   const [adjustmentEditor, setAdjustmentEditor] = useState<{
     fileName: string;
     sourceIndex: number;
@@ -1011,6 +1082,7 @@ export default function VipOrganizer() {
   }
 
   useEffect(() => {
+    if (platformSwitching) return;
     if (!sessionId || !slots.length) {
       previewAbortRef.current?.abort();
       setSlotPreviews({});
@@ -1143,11 +1215,12 @@ export default function VipOrganizer() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [sessionId, slots, info, platform]);
+  }, [sessionId, slots, info, platform, platformSwitching]);
 
   useEffect(() => {
     if (
       platform !== "vip"
+      || platformSwitching
       || previewBusy
       || !sessionId
       || !slots.length
@@ -1202,7 +1275,7 @@ export default function VipOrganizer() {
       }
     }, 450);
     return () => window.clearTimeout(timer);
-  }, [platform, previewBusy, sessionId, slots, slotPreviews, info]);
+  }, [platform, platformSwitching, previewBusy, sessionId, slots, slotPreviews, info]);
 
   useEffect(() => {
     api.getApiConfigs("text_analysis")
@@ -1370,7 +1443,8 @@ export default function VipOrganizer() {
     tagsOverride?: Record<number, string[]>,
     collections?: { products: UploadItem[]; models: UploadItem[]; tags: UploadItem[] },
     incrementalKind?: "tag",
-    manageBusy = true
+    manageBusy = true,
+    replaceSlots = false
   ) {
     const productItems = collections?.products || productsRef.current;
     const modelItems = collections?.models || modelsRef.current;
@@ -1389,6 +1463,7 @@ export default function VipOrganizer() {
         platform: platformOverride
       });
       setSlots((current) => {
+        if (replaceSlots) return result.slots as Slot[];
         const merged = mergeAnalyzedSlots(current, result.slots as Slot[]);
         if (incrementalKind !== "tag") return merged;
         const mergedByName = new Map(merged.map((slot) => [slot.file_name, slot]));
@@ -1656,6 +1731,7 @@ export default function VipOrganizer() {
 
   async function changePlatform(nextPlatform: OrganizerPlatform) {
     if (nextPlatform === platform) return;
+    const scrollTop = window.scrollY;
     previewAbortRef.current?.abort();
     previewRequestRef.current += 1;
     platformWorkspaceRef.current[platform] = {
@@ -1671,15 +1747,21 @@ export default function VipOrganizer() {
       slotPreviewSignaturesRef.current = { ...cached.signatures };
       setPlatform(nextPlatform);
       setMessage(`已切换到${nextPlatform === "jd" ? "京东" : "唯品会"}，直接恢复该平台上次预览。`);
+      window.requestAnimationFrame(() => window.scrollTo({ top: scrollTop, left: 0, behavior: "auto" }));
       return;
     }
-    setSlots([]);
+    setPlatformSwitching(true);
     setSlotPreviews({});
     slotPreviewSignaturesRef.current = {};
     setPlatform(nextPlatform);
     setMessage(`正在准备${nextPlatform === "jd" ? "京东" : "唯品会"}预览……`);
-    if (productsRef.current.length) {
-      await analyze(undefined, nextPlatform, assetTagsRef.current);
+    try {
+      if (productsRef.current.length) {
+        await analyze(undefined, nextPlatform, assetTagsRef.current, undefined, undefined, true, true);
+      }
+    } finally {
+      setPlatformSwitching(false);
+      window.requestAnimationFrame(() => window.scrollTo({ top: scrollTop, left: 0, behavior: "auto" }));
     }
   }
 
@@ -1825,7 +1907,7 @@ export default function VipOrganizer() {
                   role="tab"
                   aria-selected={item.id === platform}
                   className={item.id === platform ? "active" : ""}
-                  disabled={busy}
+                  disabled={busy || platformSwitching}
                   onClick={() => changePlatform(item.id)}
                 >
                   <span>{item.label}</span>
@@ -1833,7 +1915,7 @@ export default function VipOrganizer() {
               ))}
             </div>
           </div>
-          <div className="section-title-row"><div><h2>4. 检查{platform === "jd" ? "京东7个输出位置" : "15个输出位置"}</h2><p>点击成品图或“调整”，可独立裁剪、缩放和移动来源图；模板、文字与原图曝光不会改变。</p></div>{previewBusy && <span className="organizer-preview-status"><LoaderCircle className="spin" size={16} />正在更新成品预览</span>}</div>
+          <div className="section-title-row"><div><h2>4. 检查{platform === "jd" ? "京东7个输出位置" : "15个输出位置"}</h2><p>点击成品图或“调整”，可独立裁剪、缩放和移动来源图；模板、文字与原图曝光不会改变。</p></div>{(previewBusy || platformSwitching) && <span className="organizer-preview-status"><LoaderCircle className="spin" size={16} />{platformSwitching ? "正在切换输出平台" : "正在更新成品预览"}</span>}</div>
           <div className="organizer-preview-groups">
             {previewGroups.map((group) => <section className="organizer-preview-group" key={group.folder}>
               {group.label && <header className="organizer-preview-group-header">
