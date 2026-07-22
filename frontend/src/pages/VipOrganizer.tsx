@@ -1,4 +1,4 @@
-import { CheckCircle2, Crop, Download, FileImage, LoaderCircle, Move, RefreshCw, RotateCcw, Save, UploadCloud, X, ZoomIn, ZoomOut } from "lucide-react";
+import { CheckCircle2, Crop, Download, FileImage, LoaderCircle, Move, RefreshCw, RotateCcw, Save, Smartphone, UploadCloud, X, ZoomIn, ZoomOut } from "lucide-react";
 import type { DragEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
@@ -657,10 +657,12 @@ function SlotAdjustmentEditor({
   slot,
   sourceIndex,
   sourceUrl,
+  displaySourceUrl,
   initialPreview,
   productInfo,
   platform,
   targetFolder,
+  initialMoveTarget = "product",
   onClose,
   onSave
 }: {
@@ -668,10 +670,12 @@ function SlotAdjustmentEditor({
   slot: Slot;
   sourceIndex: number;
   sourceUrl: string;
+  displaySourceUrl?: string;
   initialPreview?: string;
   productInfo: Record<string, string>;
   platform: OrganizerPlatform;
   targetFolder: PreviewFolder;
+  initialMoveTarget?: "product" | "phone";
   onClose: () => void;
   onSave: (adjustment: ImageAdjustment, logoColor: LogoColor, previewUrl?: string) => void;
 }) {
@@ -686,7 +690,7 @@ function SlotAdjustmentEditor({
   const [error, setError] = useState("");
   const [cropMode, setCropMode] = useState(false);
   const isPhoneComparison = platform === "jd" && slot.file_name === "5.jpg";
-  const [moveTarget, setMoveTarget] = useState<"product" | "phone">("product");
+  const [moveTarget] = useState<"product" | "phone">(initialMoveTarget);
   const [cropSelection, setCropSelection] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const sourceStageRef = useRef<HTMLDivElement>(null);
   const resultStageRef = useRef<HTMLDivElement>(null);
@@ -903,19 +907,35 @@ function SlotAdjustmentEditor({
     });
   }
 
-  function toggleComparisonRuler() {
-    const current = draftRef.current;
-    if (moveTarget === "phone") {
-      applyDraft({ ...current, phone_show_ruler: current.phone_show_ruler === false });
-    } else {
-      applyDraft({ ...current, product_show_ruler: current.product_show_ruler === false });
-    }
-  }
-
   function reset() {
-    logoColorRef.current = "black";
-    setLogoColor("black");
-    applyDraft({ ...DEFAULT_ADJUSTMENT });
+    if (!isPhoneComparison) {
+      logoColorRef.current = "black";
+      setLogoColor("black");
+    }
+    if (isPhoneComparison && moveTarget === "phone") {
+      applyDraft({
+        ...draftRef.current,
+        phone_scale: DEFAULT_ADJUSTMENT.phone_scale,
+        phone_offset_x: DEFAULT_ADJUSTMENT.phone_offset_x,
+        phone_offset_y: DEFAULT_ADJUSTMENT.phone_offset_y,
+        phone_alignment: DEFAULT_ADJUSTMENT.phone_alignment,
+        phone_show_ruler: DEFAULT_ADJUSTMENT.phone_show_ruler
+      });
+    } else if (isPhoneComparison) {
+      applyDraft({
+        ...draftRef.current,
+        zoom: DEFAULT_ADJUSTMENT.zoom,
+        offset_x: DEFAULT_ADJUSTMENT.offset_x,
+        offset_y: DEFAULT_ADJUSTMENT.offset_y,
+        crop_x: DEFAULT_ADJUSTMENT.crop_x,
+        crop_y: DEFAULT_ADJUSTMENT.crop_y,
+        crop_width: DEFAULT_ADJUSTMENT.crop_width,
+        crop_height: DEFAULT_ADJUSTMENT.crop_height,
+        product_show_ruler: DEFAULT_ADJUSTMENT.product_show_ruler
+      });
+    } else {
+      applyDraft({ ...DEFAULT_ADJUSTMENT });
+    }
     cropSelectionRef.current = null;
     setCropSelection(null);
     setCropMode(false);
@@ -953,7 +973,7 @@ function SlotAdjustmentEditor({
         <header>
           <div>
             <strong>{slot.file_name} · {slot.title}</strong>
-            <span>{slot.file_name === "606.jpg" ? `正在调整来源 ${sourceIndex + 1}` : "当前输出位置独立调整"}</span>
+            <span>{slot.file_name === "606.jpg" ? `正在调整来源 ${sourceIndex + 1}` : isPhoneComparison ? `正在调整${moveTarget === "phone" ? "手机" : "商品图"}` : "当前输出位置独立调整"}</span>
           </div>
           <button type="button" className="icon-button" onClick={onClose} title="关闭"><X size={21} /></button>
         </header>
@@ -961,8 +981,8 @@ function SlotAdjustmentEditor({
         <div className="slot-adjustment-workspace">
           <div className="slot-adjustment-source">
             <div className="slot-adjustment-heading">
-              <strong>原始图片</strong>
-              <span>{cropMode ? "拖动框选保留区域" : "点击“裁剪”后框选区域"}</span>
+              <strong>{isPhoneComparison && moveTarget === "phone" ? "手机参照图" : "原始图片"}</strong>
+              <span>{isPhoneComparison && moveTarget === "phone" ? "在右侧预览中拖动和缩放手机" : cropMode ? "拖动框选保留区域" : "点击“裁剪”后框选区域"}</span>
             </div>
             <div
               ref={sourceStageRef}
@@ -994,7 +1014,7 @@ function SlotAdjustmentEditor({
               onPointerUp={finishCrop}
               onPointerCancel={finishCrop}
             >
-              <img ref={sourceImageRef} src={sourceUrl} alt="原始素材" draggable={false} />
+              <img ref={sourceImageRef} src={displaySourceUrl || sourceUrl} alt={isPhoneComparison && moveTarget === "phone" ? "手机参照图" : "原始素材"} draggable={false} />
               {cropSelection && <div className="slot-crop-selection" style={cropSelection} />}
             </div>
           </div>
@@ -1070,17 +1090,19 @@ function SlotAdjustmentEditor({
 
         <div className="slot-adjustment-controls">
           {isPhoneComparison && <div className="slot-phone-controls" role="group" aria-label="手机对比调整">
-            <span>调整对象</span>
-            <button type="button" className={moveTarget === "product" ? "active-tool" : ""} onClick={() => setMoveTarget("product")}>商品图</button>
-            <button type="button" className={moveTarget === "phone" ? "active-tool" : ""} onClick={() => setMoveTarget("phone")}>手机</button>
-            <button type="button" className="ruler-toggle" onClick={toggleComparisonRuler}>
-              {moveTarget === "phone" ? (draft.phone_show_ruler === false ? "显示手机标线" : "隐藏手机标线") : (draft.product_show_ruler === false ? "显示商品标线" : "隐藏商品标线")}
-            </button>
-            <span>对齐</span>
-            <button type="button" className={(draft.phone_alignment || "center") === "center" ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_alignment: "center" })}>中心同高</button>
-            <button type="button" className={draft.phone_alignment === "bottom" ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_alignment: "bottom" })}>底部齐平</button>
+            <span>{moveTarget === "phone" ? "手机标线" : "商品标线"}</span>
+            {moveTarget === "phone" ? <>
+              <button type="button" className={draft.phone_show_ruler === false ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_show_ruler: false })}>仅手机</button>
+              <button type="button" className={draft.phone_show_ruler !== false ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_show_ruler: true })}>手机和标线</button>
+              <span>对齐</span>
+              <button type="button" className={(draft.phone_alignment || "center") === "center" ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_alignment: "center" })}>中心同高</button>
+              <button type="button" className={draft.phone_alignment === "bottom" ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_alignment: "bottom" })}>底部齐平</button>
+            </> : <>
+              <button type="button" className={draft.product_show_ruler === false ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, product_show_ruler: false })}>仅商品图</button>
+              <button type="button" className={draft.product_show_ruler !== false ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, product_show_ruler: true })}>商品图和标线</button>
+            </>}
           </div>}
-          <button type="button" className={cropMode ? "active-tool" : ""} onClick={toggleCropMode}><Crop size={18} />裁剪</button>
+          {(!isPhoneComparison || moveTarget === "product") && <button type="button" className={cropMode ? "active-tool" : ""} onClick={toggleCropMode}><Crop size={18} />裁剪</button>}
           <button type="button" onClick={() => changeZoom(-0.05)}><ZoomOut size={18} />缩小</button>
           <span className="slot-zoom-value">{Math.round((isPhoneComparison && moveTarget === "phone" ? draft.phone_scale || 1 : draft.zoom) * 100)}%</span>
           <button type="button" onClick={() => changeZoom(0.05)}><ZoomIn size={18} />放大</button>
@@ -1145,6 +1167,7 @@ export default function VipOrganizer() {
     fileName: string;
     sourceIndex: number;
     targetFolder: PreviewFolder;
+    targetObject: "product" | "phone";
   } | null>(null);
   const previewRequestRef = useRef(0);
   const previewAbortRef = useRef<AbortController | null>(null);
@@ -1794,14 +1817,15 @@ export default function VipOrganizer() {
   function openAdjustmentEditor(
     fileName: string,
     sourceIndex = 0,
-    targetFolder: PreviewFolder = "800"
+    targetFolder: PreviewFolder = "800",
+    targetObject: "product" | "phone" = "product"
   ) {
     const slot = slots.find((item) => item.file_name === fileName);
     if (!slot?.image_ids[sourceIndex]) {
       setMessage("当前输出位置还没有可调整的来源图片");
       return;
     }
-    setAdjustmentEditor({ fileName, sourceIndex, targetFolder });
+    setAdjustmentEditor({ fileName, sourceIndex, targetFolder, targetObject });
   }
 
   function saveSlotAdjustment(
@@ -2103,14 +2127,25 @@ export default function VipOrganizer() {
                     </div>
                     <div className="organizer-slot-body">
                       <div className="organizer-slot-title"><strong>{slot.file_name}</strong><span>{slot.title}</span><small>{outputSize.width}×{outputSize.height}</small></div>
-                      {count === 1 && <button
+                      {count === 1 && platform === "jd" && slot.file_name === "5.jpg" ? <div className="organizer-object-adjustments" role="group" aria-label="尺寸对比图调整对象">
+                        <button
                           type="button"
                           className="organizer-adjust-output"
                           disabled={!slot.image_ids[0]}
-                          onClick={() => openAdjustmentEditor(slot.file_name, 0, group.folder)}
-                        >
-                          <Crop size={16} />调整成品
-                        </button>}
+                          onClick={() => openAdjustmentEditor(slot.file_name, 0, group.folder, "product")}
+                        ><Crop size={16} />调整商品图</button>
+                        <button
+                          type="button"
+                          className="organizer-adjust-output"
+                          disabled={!slot.image_ids[0]}
+                          onClick={() => openAdjustmentEditor(slot.file_name, 0, group.folder, "phone")}
+                        ><Smartphone size={16} />调整手机</button>
+                      </div> : count === 1 && <button
+                        type="button"
+                        className="organizer-adjust-output"
+                        disabled={!slot.image_ids[0]}
+                        onClick={() => openAdjustmentEditor(slot.file_name, 0, group.folder)}
+                      ><Crop size={16} />调整成品</button>}
                       {editableSource && Array.from({ length: count }).map((_, index) => {
                         const currentAsset = selectedAsset(slot.image_ids[index]);
                         return <label key={index}>{count > 1 ? `来源 ${index + 1}` : "来源图片"}
@@ -2151,15 +2186,17 @@ export default function VipOrganizer() {
         <img src={preview} alt="图片预览" onClick={(event) => event.stopPropagation()} />
       </div>}
       {adjustmentEditor && activeEditorSlot && activeEditorAsset && <SlotAdjustmentEditor
-        key={`${platform}:${adjustmentEditor.targetFolder}:${activeEditorSlot.file_name}:${adjustmentEditor.sourceIndex}:${activeEditorAsset.id}`}
+        key={`${platform}:${adjustmentEditor.targetFolder}:${activeEditorSlot.file_name}:${adjustmentEditor.sourceIndex}:${adjustmentEditor.targetObject}:${activeEditorAsset.id}`}
         sessionId={sessionId}
         slot={activeEditorSlot}
         sourceIndex={adjustmentEditor.sourceIndex}
         sourceUrl={activeEditorAsset.original_url || activeEditorAsset.preview_url}
+        displaySourceUrl={adjustmentEditor.targetObject === "phone" ? "/organizer-assets/iphone_reference.png" : undefined}
         initialPreview={slotPreviews[slotPreviewKey(platform, activeEditorSlot.file_name, adjustmentEditor.targetFolder)]}
         productInfo={organizerProductInfo()}
         platform={platform}
         targetFolder={adjustmentEditor.targetFolder}
+        initialMoveTarget={adjustmentEditor.targetObject}
         onClose={() => setAdjustmentEditor(null)}
         onSave={(adjustment, logoColor, previewUrl) => saveSlotAdjustment(
           activeEditorSlot.file_name,

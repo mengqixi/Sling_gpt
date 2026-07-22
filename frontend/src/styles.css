@@ -152,6 +152,8 @@
 .organizer-slot.is-composite .organizer-slot-preview > button,
 .organizer-slot.is-composite .organizer-slot-preview > button img { min-height: 0; }
 .organizer-preview-status { display: inline-flex; align-items: center; gap: 7px; color: #31594d; font-size: 13px; white-space: nowrap; }
+.organizer-object-adjustments { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.organizer-object-adjustments .organizer-adjust-output { width: 100%; min-width: 0; }
 .confidence { margin-top: 9px; padding: 8px; border-radius: 4px; font-size: 12px; }
 .confidence span { font-weight: 700; }
 .confidence p { margin: 3px 0 0; line-height: 1.45; }
