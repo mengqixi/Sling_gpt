@@ -39,7 +39,7 @@ JD_LOGO_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "
 JD_PHONE_REFERENCE_PATH = Path(__file__).resolve().parents[1] / "assets" / "iphone_reference.png"
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
-PREVIEW_RENDER_VERSION = 10
+PREVIEW_RENDER_VERSION = 11
 MAX_PREVIEW_CACHE_ENTRIES = 96
 JD_PHONE_HEIGHT_MM = 163.0
 JD_PHONE_LABEL = "iPhone 17 Pro Max"
@@ -1665,13 +1665,18 @@ def _paste_detail_layer(
     default_mode: str = "cover",
 ) -> None:
     cropped = _crop_source(source, adjustment)
-    if not _has_manual_layout_adjustment(adjustment) and _has_light_studio_border(cropped):
+    if not _has_manual_crop(adjustment) and _has_light_studio_border(cropped):
         cutout = _product_cutout(cropped)
+        normalized = _normalize_adjustment(adjustment)
         _paste_layer(
             canvas,
             cutout,
             box,
-            {"zoom": auto_zoom, "offset_y": auto_offset_y},
+            {
+                "zoom": normalized["zoom"] * auto_zoom,
+                "offset_x": normalized["offset_x"],
+                "offset_y": normalized["offset_y"] + auto_offset_y,
+            },
             mode="contain",
             clip_box=clip_box,
         )

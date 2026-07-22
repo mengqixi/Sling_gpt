@@ -515,15 +515,11 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         || draft.crop_y > 0.0001
         || draft.crop_width < 0.9999
         || draft.crop_height < 0.9999;
-      const hasManualLayout = hasManualCrop
-        || Math.abs(draft.zoom - 1) > 0.0001
-        || Math.abs(draft.offset_x) > 0.0001
-        || Math.abs(draft.offset_y) > 0.0001;
       const automaticDetailCandidate = platform === "jd"
         ? ["3.jpg", "4.jpg"].includes(slot.file_name)
         : ["4.jpg", "604.jpg", "605.jpg"].includes(slot.file_name);
       const usesAutomaticDetailCutout = automaticDetailCandidate
-        && !hasManualLayout
+        && !hasManualCrop
         && livePreviewHasLightStudioBorder(sourceUrl, image);
       if (usesAutomaticDetailCutout && platform === "jd") {
         area = { x: 0.0875, y: 0.145, width: 0.825, height: 0.775, mode: "contain" };

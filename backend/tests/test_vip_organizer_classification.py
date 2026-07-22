@@ -126,6 +126,27 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         self.assertLess(int(ys.max()), 690)
         self.assertLess(float(ys.mean()), 455)
 
+    def test_detail_position_adjustment_keeps_the_automatic_cutout_scale(self):
+        source = Image.new("RGB", (400, 600), "white")
+        draw = ImageDraw.Draw(source)
+        draw.line((155, 260, 190, 90, 225, 260), fill="#171717", width=12)
+        draw.rectangle((110, 255, 290, 520), fill="#171717")
+
+        automatic = _detail_showcase_page(source)
+        adjusted = _detail_showcase_page(source, {"offset_x": 0.03, "offset_y": -0.02})
+        boxes = []
+        for image in (automatic, adjusted):
+            pixels = np.asarray(image)
+            y_grid = np.indices(pixels.shape[:2])[0]
+            ys, xs = np.where((pixels.mean(axis=2) < 80) & (y_grid > 160))
+            boxes.append((int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1))
+        automatic_box, adjusted_box = boxes
+
+        self.assertLessEqual(abs((adjusted_box[2] - adjusted_box[0]) - (automatic_box[2] - automatic_box[0])), 2)
+        self.assertLessEqual(abs((adjusted_box[3] - adjusted_box[1]) - (automatic_box[3] - automatic_box[1])), 2)
+        self.assertGreater(adjusted_box[0], automatic_box[0])
+        self.assertLess(adjusted_box[1], automatic_box[1])
+
     def test_template_product_box_allows_upscaling(self):
         canvas = Image.new("RGB", (750, 665), "white")
         _paste_product(canvas, self._small_catalog_product(), (378, 270, 665, 470))
