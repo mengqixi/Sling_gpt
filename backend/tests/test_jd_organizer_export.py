@@ -61,21 +61,29 @@ def _bright_pixel_bbox(image: Image.Image) -> tuple[int, int, int, int]:
 def test_jd_logo_matches_example_geometry():
     canvas_800 = Image.new("RGB", (800, 800), "white")
     service._draw_jd_elle_logo(canvas_800, canvas_800.size)
-    assert _dark_pixel_bbox(canvas_800) == (32, 38, 219, 98)
+    assert _dark_pixel_bbox(canvas_800) == (32, 38, 222, 98)
 
     canvas_750 = Image.new("RGB", (750, 1000), "white")
     service._draw_jd_elle_logo(canvas_750, canvas_750.size)
-    assert _dark_pixel_bbox(canvas_750) == (56, 45, 243, 105)
+    assert _dark_pixel_bbox(canvas_750) == (56, 45, 246, 105)
 
 
 def test_jd_white_logo_uses_the_same_geometry():
     canvas_800 = Image.new("RGB", (800, 800), "#222222")
     service._draw_jd_elle_logo(canvas_800, canvas_800.size, "white")
-    assert _bright_pixel_bbox(canvas_800) == (32, 38, 219, 98)
+    assert _bright_pixel_bbox(canvas_800) == (32, 38, 222, 98)
 
     canvas_750 = Image.new("RGB", (750, 1000), "#222222")
     service._draw_jd_elle_logo(canvas_750, canvas_750.size, "white")
-    assert _bright_pixel_bbox(canvas_750) == (56, 45, 243, 105)
+    assert _bright_pixel_bbox(canvas_750) == (56, 45, 246, 105)
+
+
+def test_jd_logo_layers_use_the_supplied_templates_exactly():
+    for color, path in (("black", service.JD_LOGO_BLACK_PATH), ("white", service.JD_LOGO_WHITE_PATH)):
+        with Image.open(path) as source:
+            expected = source.convert("RGBA").resize((190, 60), Image.Resampling.LANCZOS)
+        actual = service._jd_elle_logo_layer(color)
+        assert np.array_equal(np.asarray(actual), np.asarray(expected))
 
 
 def test_jd_logo_color_is_stored_per_output_slot():
@@ -139,6 +147,59 @@ def test_jd_phone_comparison_waits_for_length_and_height():
     assert not service._jd_size_dimensions_ready({})
     assert not service._jd_size_dimensions_ready({"product_length": "20"})
     assert service._jd_size_dimensions_ready({"product_length": "20", "product_height": "14"})
+
+
+def test_vip_info_page_waits_for_length_and_height_and_formats_mm():
+    assert not service._vip_info_ready({})
+    assert not service._vip_info_ready({"product_length": "19.5"})
+    assert service._vip_info_ready({"product_length": "19.5", "product_height": "14"})
+    assert service._dimension_mm("19.5") == "195mm"
+    assert service._dimension_mm("163mm") == "163mm"
+
+
+def test_vip_info_measurement_excludes_sparse_handle():
+    layer = Image.new("RGBA", (360, 420), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    draw.arc((105, 20, 255, 230), 180, 360, fill=(30, 30, 30, 255), width=10)
+    draw.rectangle((65, 175, 295, 385), fill=(70, 70, 70, 255))
+
+    left, top, right, bottom = service._info_measurement_bbox(layer)
+
+    assert top >= 160
+    assert bottom >= 380
+    assert left <= 70
+    assert right >= 290
+
+
+def test_vip_info_rulers_can_be_hidden():
+    info = {"product_length": "19.5", "product_width": "5.5", "product_height": "14"}
+
+    with_rulers = service._info_page(info, None, {"product_show_ruler": True})
+    without_rulers = service._info_page(info, None, {"product_show_ruler": False})
+
+    ruler = service._info_ruler_geometry((384.0, 286.0, 594.0, 462.0))
+    assert with_rulers.getpixel((ruler["left"] + 5, ruler["horizontal_y"])) != (255, 255, 255)
+    assert without_rulers.getpixel((ruler["left"] + 5, ruler["horizontal_y"])) == (255, 255, 255)
+
+
+def test_vip_info_product_and_rulers_share_zoom_and_movement():
+    source = Image.new("RGBA", (300, 220), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(source)
+    draw.arc((90, 10, 210, 135), 180, 360, fill=(40, 40, 40, 255), width=8)
+    draw.rectangle((35, 90, 265, 205), fill=(70, 80, 90, 255))
+
+    base_body = service._paste_info_product(Image.new("RGB", (750, 665), "white"), source, None)
+    adjusted_body = service._paste_info_product(
+        Image.new("RGB", (750, 665), "white"),
+        source,
+        {"zoom": 1.1, "offset_x": 0.08, "offset_y": -0.04},
+    )
+    base_ruler = service._info_ruler_geometry(base_body)
+    adjusted_ruler = service._info_ruler_geometry(adjusted_body)
+
+    assert adjusted_ruler["right"] - adjusted_ruler["left"] > base_ruler["right"] - base_ruler["left"]
+    assert adjusted_ruler["left"] > base_ruler["left"]
+    assert adjusted_ruler["top"] < base_ruler["top"]
 
 
 def test_jd_product_zoom_keeps_one_baseline_transform_for_every_shape():
@@ -247,6 +308,15 @@ def test_jd_size_slot_keeps_labeled_front_even_for_narrow_bag():
 
 
 class JdOrganizerGeometryTests(unittest.TestCase):
+    def test_black_logo_template_geometry(self):
+        test_jd_logo_matches_example_geometry()
+
+    def test_white_logo_template_geometry(self):
+        test_jd_white_logo_uses_the_same_geometry()
+
+    def test_logo_uses_supplied_template(self):
+        test_jd_logo_layers_use_the_supplied_templates_exactly()
+
     def test_shape_profiles(self):
         test_jd_shape_profiles_cover_extreme_and_common_handbag_proportions()
 
@@ -261,6 +331,18 @@ class JdOrganizerGeometryTests(unittest.TestCase):
 
     def test_phone_comparison_dimension_gate(self):
         test_jd_phone_comparison_waits_for_length_and_height()
+
+    def test_vip_info_dimension_gate_and_units(self):
+        test_vip_info_page_waits_for_length_and_height_and_formats_mm()
+
+    def test_vip_info_excludes_handle(self):
+        test_vip_info_measurement_excludes_sparse_handle()
+
+    def test_vip_info_ruler_toggle(self):
+        test_vip_info_rulers_can_be_hidden()
+
+    def test_vip_info_rulers_follow_product(self):
+        test_vip_info_product_and_rulers_share_zoom_and_movement()
 
     def test_connected_background_cutout(self):
         test_product_cutout_removes_connected_light_gradient_without_losing_white_bag()

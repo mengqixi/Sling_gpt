@@ -176,7 +176,7 @@ function slotPreviewLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex:
     return { x: 0, y: 0, width: 1, height: 1, mode: "cover" as const };
   }
   if (slot.file_name === "401.jpg") {
-    return { x: 346 / 750, y: 258 / 665, width: 287 / 750, height: 200 / 665, mode: "contain" as const };
+    return { x: 359 / 750, y: 283 / 665, width: 262 / 750, height: 182 / 665, mode: "contain" as const };
   }
   if (slot.file_name === "606.jpg") {
     const positions = [
@@ -551,6 +551,62 @@ function liveProductBodyBounds(canvas: HTMLCanvasElement): PixelBounds {
   return body;
 }
 
+function liveInfoMeasurementBounds(canvas: HTMLCanvasElement): PixelBounds {
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return { left: 0, top: 0, right: canvas.width, bottom: canvas.height };
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  const rowCounts = new Array<number>(canvas.height).fill(0);
+  let fullLeft = canvas.width;
+  let fullTop = canvas.height;
+  let fullRight = 0;
+  let fullBottom = 0;
+  for (let y = 0; y < canvas.height; y += 1) {
+    for (let x = 0; x < canvas.width; x += 1) {
+      if (pixels[(y * canvas.width + x) * 4 + 3] <= 28) continue;
+      rowCounts[y] += 1;
+      fullLeft = Math.min(fullLeft, x);
+      fullTop = Math.min(fullTop, y);
+      fullRight = Math.max(fullRight, x + 1);
+      fullBottom = Math.max(fullBottom, y + 1);
+    }
+  }
+  if (fullRight <= fullLeft || fullBottom <= fullTop) {
+    return { left: 0, top: 0, right: canvas.width, bottom: canvas.height };
+  }
+  const broadRun = longestTrueRun(rowCounts.map((count) => count >= Math.max(8, Math.round(Math.max(...rowCounts) * 0.22))));
+  if (!broadRun) return { left: fullLeft, top: fullTop, right: fullRight, bottom: fullBottom };
+  const columnCounts = new Array<number>(canvas.width).fill(0);
+  for (let y = broadRun.start; y < broadRun.end; y += 1) {
+    for (let x = 0; x < canvas.width; x += 1) {
+      if (pixels[(y * canvas.width + x) * 4 + 3] > 28) columnCounts[x] += 1;
+    }
+  }
+  const columnRun = longestTrueRun(columnCounts.map((count) => count >= Math.max(2, Math.round((broadRun.end - broadRun.start) * 0.08))));
+  return {
+    left: columnRun ? Math.max(fullLeft, columnRun.start) : fullLeft,
+    top: Math.max(fullTop, broadRun.start),
+    right: columnRun ? Math.min(fullRight, columnRun.end) : fullRight,
+    bottom: Math.min(fullBottom, broadRun.end)
+  };
+}
+
+function infoRulerGeometry(body: PixelBounds) {
+  const left = Math.round(body.left + 4);
+  const right = Math.round(body.right - 4);
+  const width = Math.max(48, right - left);
+  const bottom = Math.round(body.bottom - 9);
+  const top = Math.round(body.top - 5);
+  const lineHeight = Math.max(1, bottom - top);
+  return {
+    left,
+    right,
+    top,
+    bottom,
+    verticalX: Math.max(285, left - Math.max(34, Math.round(width * 0.205))),
+    horizontalY: Math.min(535, bottom + Math.max(24, Math.round(lineHeight * 0.175)))
+  };
+}
+
 function liveJdProductLayer(url: string, image: HTMLImageElement, draft: ImageAdjustment): LiveProductLayer {
   const cropKey = [draft.crop_x, draft.crop_y, draft.crop_width, draft.crop_height]
     .map((value) => value.toFixed(5))
@@ -755,18 +811,19 @@ function drawJdComparisonPreview(
   image: HTMLImageElement,
   sourceUrl: string,
   phoneReference: HTMLImageElement | null,
+  logoReference: HTMLImageElement | null,
   draft: ImageAdjustment,
-  productInfo: Record<string, string>,
-  logoColor: LogoColor
+  productInfo: Record<string, string>
 ) {
   const layer = liveJdProductLayer(sourceUrl, image, draft);
   const geometry = jdProductGeometry(output, layer, draft, productInfo);
   context.fillStyle = "#f3f3f3";
   context.fillRect(0, 0, output.width, output.height);
-  context.fillStyle = logoColor === "white" ? "#fff" : "#111";
-  context.font = `500 ${Math.round(output.width * 0.078)}px Georgia, serif`;
-  context.textBaseline = "top";
-  context.fillText("ELLE", output.width * 0.04, output.height * 0.042);
+  if (logoReference?.complete && logoReference.naturalWidth) {
+    const logoX = output.width === 750 && output.height === 1000 ? 56 : 32;
+    const logoY = output.width === 750 && output.height === 1000 ? 45 : 38;
+    context.drawImage(logoReference, logoX, logoY, 190, 60);
+  }
   context.drawImage(layer.canvas, geometry.x, geometry.y, geometry.width, geometry.height);
 
   const rulerGap = Math.max(28, output.width * 0.045);
@@ -848,6 +905,9 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
     const phoneReference = platform === "jd" && slot.file_name === "5.jpg"
       ? livePreviewImage("/organizer-assets/iphone_reference.png")
       : null;
+    const logoReference = platform === "jd" && slot.file_name === "5.jpg"
+      ? livePreviewImage(`/organizer-assets/elle_logo_${logoColor}.png`)
+      : null;
     const draw = () => {
       if (!image.complete || !image.naturalWidth) return;
       if (template && (!template.complete || !template.naturalWidth)) return;
@@ -856,7 +916,7 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       context.fillRect(0, 0, output.width, output.height);
       if (template) context.drawImage(template, 0, 0, output.width, output.height);
       if (platform === "jd" && slot.file_name === "5.jpg") {
-        drawJdComparisonPreview(context, output, image, sourceUrl, phoneReference, draft, productInfo, logoColor);
+        drawJdComparisonPreview(context, output, image, sourceUrl, phoneReference, logoReference, draft, productInfo);
         drawAdjustmentGuide(context, output, slot, platform, sourceIndex, targetFolder);
         return;
       }
@@ -911,7 +971,9 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       let drawX = areaX + (areaWidth - drawWidth) / 2 + draft.offset_x * areaWidth;
       let drawY = areaY + (areaHeight - drawHeight) / 2 + draft.offset_y * areaHeight
         + (usesAutomaticDetailCutout
-          ? (platform === "jd" ? -0.055 : ["604.jpg", "605.jpg"].includes(slot.file_name) ? -0.11 : -0.08) * areaHeight
+          ? (platform === "jd"
+            ? (slot.file_name === "4.jpg" ? -0.025 : -0.055)
+            : ["604.jpg", "605.jpg"].includes(slot.file_name) ? -0.11 : -0.08) * areaHeight
           : 0);
       const editorArea = slotEditorSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
       const safeLeft = editorArea.x * output.width;
@@ -922,6 +984,9 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       if (drawHeight <= safeBottom - safeTop) drawY = Math.max(safeTop, Math.min(drawY, safeBottom - drawHeight));
 
       context.fillStyle = "#fff";
+      if (platform === "vip" && slot.file_name === "401.jpg") {
+        context.fillRect(280 * output.width / 750, 240 * output.height / 665, 440 * output.width / 750, 310 * output.height / 665);
+      }
       context.fillRect(areaX, areaY, areaWidth, areaHeight);
       context.save();
       context.beginPath();
@@ -940,10 +1005,32 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       );
       context.restore();
 
-      if (platform === "vip" && slot.file_name === "401.jpg") {
+      if (platform === "vip" && slot.file_name === "401.jpg" && draft.product_show_ruler !== false) {
         const scaleX = output.width / 750;
         const scaleY = output.height / 665;
         const lineColor = "#777";
+        const layerBounds = productLayer ? liveInfoMeasurementBounds(productLayer) : {
+          left: sourceX,
+          top: sourceY,
+          right: sourceX + sourceWidth,
+          bottom: sourceY + sourceHeight
+        };
+        const cropLeft = sourceX * drawSourceScaleX;
+        const cropTop = sourceY * drawSourceScaleY;
+        const cropRight = (sourceX + sourceWidth) * drawSourceScaleX;
+        const cropBottom = (sourceY + sourceHeight) * drawSourceScaleY;
+        const measuredLeft = Math.max(cropLeft, layerBounds.left);
+        const measuredTop = Math.max(cropTop, layerBounds.top);
+        const measuredRight = Math.min(cropRight, layerBounds.right);
+        const measuredBottom = Math.min(cropBottom, layerBounds.bottom);
+        const sourcePixelWidth = Math.max(1, cropRight - cropLeft);
+        const sourcePixelHeight = Math.max(1, cropBottom - cropTop);
+        const ruler = infoRulerGeometry(measuredRight > measuredLeft && measuredBottom > measuredTop ? {
+          left: drawX + (measuredLeft - cropLeft) / sourcePixelWidth * drawWidth,
+          top: drawY + (measuredTop - cropTop) / sourcePixelHeight * drawHeight,
+          right: drawX + (measuredRight - cropLeft) / sourcePixelWidth * drawWidth,
+          bottom: drawY + (measuredBottom - cropTop) / sourcePixelHeight * drawHeight
+        } : { left: drawX, top: drawY, right: drawX + drawWidth, bottom: drawY + drawHeight });
         const lengthValue = Number.parseFloat(productInfo.product_length || "");
         const widthValue = Number.parseFloat(productInfo.product_width || "");
         const heightValue = Number.parseFloat(productInfo.product_height || "");
@@ -952,36 +1039,36 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         context.strokeStyle = lineColor;
         context.fillStyle = "#555";
         context.lineWidth = 2 * Math.min(scaleX, scaleY);
-        context.font = `${Math.max(12, Math.round(18 * Math.min(scaleX, scaleY)))}px sans-serif`;
+        context.font = `${Math.max(12, Math.round(19 * Math.min(scaleX, scaleY)))}px sans-serif`;
         context.textAlign = "center";
         context.beginPath();
-        context.moveTo(390 * scaleX, 486 * scaleY);
-        context.lineTo(590 * scaleX, 486 * scaleY);
-        context.moveTo(390 * scaleX, 477 * scaleY);
-        context.lineTo(390 * scaleX, 495 * scaleY);
-        context.moveTo(590 * scaleX, 477 * scaleY);
-        context.lineTo(590 * scaleX, 495 * scaleY);
-        context.moveTo(349 * scaleX, 285 * scaleY);
-        context.lineTo(349 * scaleX, 454 * scaleY);
-        context.moveTo(340 * scaleX, 285 * scaleY);
-        context.lineTo(358 * scaleX, 285 * scaleY);
-        context.moveTo(340 * scaleX, 454 * scaleY);
-        context.lineTo(358 * scaleX, 454 * scaleY);
-        context.moveTo(634 * scaleX, 486 * scaleY);
-        context.lineTo(690 * scaleX, 457 * scaleY);
-        context.moveTo(628 * scaleX, 478 * scaleY);
-        context.lineTo(639 * scaleX, 493 * scaleY);
-        context.moveTo(685 * scaleX, 450 * scaleY);
-        context.lineTo(696 * scaleX, 465 * scaleY);
+        context.moveTo(ruler.left, ruler.horizontalY);
+        context.lineTo(ruler.right, ruler.horizontalY);
+        context.moveTo(ruler.left, ruler.horizontalY - 9 * scaleY);
+        context.lineTo(ruler.left, ruler.horizontalY + 9 * scaleY);
+        context.moveTo(ruler.right, ruler.horizontalY - 9 * scaleY);
+        context.lineTo(ruler.right, ruler.horizontalY + 9 * scaleY);
+        context.moveTo(ruler.verticalX, ruler.top);
+        context.lineTo(ruler.verticalX, ruler.bottom);
+        context.moveTo(ruler.verticalX - 9 * scaleX, ruler.top);
+        context.lineTo(ruler.verticalX + 9 * scaleX, ruler.top);
+        context.moveTo(ruler.verticalX - 9 * scaleX, ruler.bottom);
+        context.lineTo(ruler.verticalX + 9 * scaleX, ruler.bottom);
+        context.moveTo(631 * scaleX, 480 * scaleY);
+        context.lineTo(682 * scaleX, 453 * scaleY);
+        context.moveTo(625 * scaleX, 472 * scaleY);
+        context.lineTo(636 * scaleX, 487 * scaleY);
+        context.moveTo(677 * scaleX, 446 * scaleY);
+        context.lineTo(688 * scaleX, 461 * scaleY);
         context.stroke();
-        context.fillText(dimensionLabel(lengthValue), 490 * scaleX, 520 * scaleY);
+        context.fillText(dimensionLabel(lengthValue), (ruler.left + ruler.right) / 2, ruler.horizontalY + 36 * scaleY);
         context.save();
-        context.translate(315 * scaleX, 370 * scaleY);
+        context.translate(ruler.verticalX - 31 * scaleX, (ruler.top + ruler.bottom) / 2 - 7 * scaleY);
         context.rotate(-Math.PI / 2);
         context.fillText(dimensionLabel(heightValue), 0, 0);
         context.restore();
         context.save();
-        context.translate(668 * scaleX, 520 * scaleY);
+        context.translate(659 * scaleX, 495 * scaleY);
         context.rotate(-26 * Math.PI / 180);
         context.fillText(dimensionLabel(widthValue), 0, 0);
         context.restore();
@@ -993,11 +1080,13 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
     image.addEventListener("load", draw);
     if (template) template.addEventListener("load", draw);
     if (phoneReference) phoneReference.addEventListener("load", draw);
+    if (logoReference) logoReference.addEventListener("load", draw);
     draw();
     return () => {
       image.removeEventListener("load", draw);
       if (template) template.removeEventListener("load", draw);
       if (phoneReference) phoneReference.removeEventListener("load", draw);
+      if (logoReference) logoReference.removeEventListener("load", draw);
     };
   }, [
     draft,
@@ -1143,6 +1232,7 @@ function SlotAdjustmentEditor({
   const [error, setError] = useState("");
   const [cropMode, setCropMode] = useState(false);
   const isPhoneComparison = platform === "jd" && slot.file_name === "5.jpg";
+  const isInfoPage = platform === "vip" && slot.file_name === "401.jpg";
   const [moveTarget] = useState<"product" | "phone">(initialMoveTarget);
   const [cropSelection, setCropSelection] = useState<CropSelection | null>(null);
   const sourceStageRef = useRef<HTMLDivElement>(null);
@@ -1567,9 +1657,9 @@ function SlotAdjustmentEditor({
         </div>
 
         <div className="slot-adjustment-controls">
-          {isPhoneComparison && <div className="slot-phone-controls" role="group" aria-label="手机对比调整">
-            <span>{moveTarget === "phone" ? "手机标线" : "商品标线"}</span>
-            {moveTarget === "phone" ? <>
+          {(isPhoneComparison || isInfoPage) && <div className="slot-phone-controls" role="group" aria-label={isInfoPage ? "产品信息图调整" : "手机对比调整"}>
+            <span>{isPhoneComparison && moveTarget === "phone" ? "手机标线" : "商品标线"}</span>
+            {isPhoneComparison && moveTarget === "phone" ? <>
               <button type="button" className={draft.phone_show_ruler === false ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_show_ruler: false })}>仅手机</button>
               <button type="button" className={draft.phone_show_ruler !== false ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_show_ruler: true })}>手机和标线</button>
               <span>对齐</span>
@@ -1696,6 +1786,7 @@ export default function VipOrganizer() {
     const jdSizeReady = jdComparisonDimensionsReady(productInfo);
     const previewTargets = slots.flatMap((slot) => {
       if (platform === "jd" && slot.file_name === "5.jpg" && !jdSizeReady) return [];
+      if (platform === "vip" && slot.file_name === "401.jpg" && !jdSizeReady) return [];
       return previewFoldersForSlot(slot, platform).map((targetFolder) => ({
         slot,
         targetFolder,
@@ -2549,7 +2640,7 @@ export default function VipOrganizer() {
         </section>
 
         <section className="panel organizer-info-panel">
-          <div className="section-title-row"><div><h2>3. 商品信息</h2><p>用于401.jpg产品信息页；填写长和高后才生成京东5.jpg尺寸与手机对比图。</p></div></div>
+          <div className="section-title-row"><div><h2>3. 商品信息</h2><p>填写长和高后，生成401.jpg产品信息页和京东5.jpg尺寸与手机对比图。</p></div></div>
           <div className="organizer-info-grid">
             <label>商品名称<input value={info.product_name} onChange={(event) => setInfo({ ...info, product_name: event.target.value })} /></label>
             <label>长（cm）<input inputMode="decimal" placeholder="例如：20" value={info.product_length} onChange={(event) => setInfo({ ...info, product_length: event.target.value })} /></label>
@@ -2597,9 +2688,10 @@ export default function VipOrganizer() {
                   const isLockedJdFront = platform === "jd" && slot.file_name === "5.jpg";
                   const editableSource = !isLockedJdFront && (slot.kind !== "generated" || slot.file_name === "401.jpg");
                   const previewKey = slotPreviewKey(platform, slot.file_name, group.folder);
-                  const jdSizeReady = platform !== "jd" || slot.file_name !== "5.jpg"
-                    || jdComparisonDimensionsReady(organizerProductInfo());
-                  const renderedPreview = jdSizeReady ? slotPreviews[previewKey] : undefined;
+                  const dimensionsReady = jdComparisonDimensionsReady(organizerProductInfo());
+                  const outputReady = !((platform === "jd" && slot.file_name === "5.jpg")
+                    || (platform === "vip" && slot.file_name === "401.jpg")) || dimensionsReady;
+                  const renderedPreview = outputReady ? slotPreviews[previewKey] : undefined;
                   const outputSize = slotCanvasSize(slot.size, platform, group.folder);
                   return <article className={`organizer-slot${slot.file_name === "606.jpg" ? " is-composite" : ""}`} key={previewKey}>
                     <div
@@ -2615,7 +2707,7 @@ export default function VipOrganizer() {
                             });
                             delete slotPreviewSignaturesRef.current[previewKey];
                           }} /></button>
-                        : <div className="generated-placeholder"><FileImage size={30} /><span>{!jdSizeReady ? "请先填写商品长和高" : previewBusy ? "正在套用模板" : "缺少素材"}</span></div>}
+                        : <div className="generated-placeholder"><FileImage size={30} /><span>{!outputReady ? "请先填写商品长和高" : previewBusy ? "正在套用模板" : "缺少素材"}</span></div>}
                     </div>
                     <div className="organizer-slot-body">
                       <div className="organizer-slot-title"><strong>{slot.file_name}</strong><span>{slot.title}</span><small>{outputSize.width}×{outputSize.height}</small></div>
@@ -2623,19 +2715,19 @@ export default function VipOrganizer() {
                         <button
                           type="button"
                           className="organizer-adjust-output"
-                          disabled={!slot.image_ids[0] || !jdSizeReady}
+                          disabled={!slot.image_ids[0] || !outputReady}
                           onClick={() => openAdjustmentEditor(slot.file_name, 0, group.folder, "product")}
                         ><Crop size={16} />调整商品图</button>
                         <button
                           type="button"
                           className="organizer-adjust-output"
-                          disabled={!slot.image_ids[0] || !jdSizeReady}
+                          disabled={!slot.image_ids[0] || !outputReady}
                           onClick={() => openAdjustmentEditor(slot.file_name, 0, group.folder, "phone")}
                         ><Smartphone size={16} />调整手机</button>
                       </div> : count === 1 && <button
                         type="button"
                         className="organizer-adjust-output"
-                        disabled={!slot.image_ids[0]}
+                        disabled={!slot.image_ids[0] || !outputReady}
                         onClick={() => openAdjustmentEditor(slot.file_name, 0, group.folder)}
                       ><Crop size={16} />调整成品</button>}
                       {isLockedJdFront && <label>来源图片

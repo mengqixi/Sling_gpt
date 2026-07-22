@@ -37,9 +37,11 @@ ORGANIZER_SESSION_TTL_HOURS = 24
 BUNDLED_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "NotoSansSC-VF-GB2312.ttf"
 JD_LOGO_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "LibreBodoni-VariableFont_wght.ttf"
 JD_PHONE_REFERENCE_PATH = Path(__file__).resolve().parents[1] / "assets" / "iphone_reference.png"
+JD_LOGO_BLACK_PATH = Path(__file__).resolve().parents[1] / "assets" / "elle_logo_black.png"
+JD_LOGO_WHITE_PATH = Path(__file__).resolve().parents[1] / "assets" / "elle_logo_white.png"
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
-PREVIEW_RENDER_VERSION = 12
+PREVIEW_RENDER_VERSION = 14
 MAX_PREVIEW_CACHE_ENTRIES = 48
 JD_PHONE_HEIGHT_MM = 163.0
 JD_PHONE_LABEL = "iPhone 17 Pro Max"
@@ -72,8 +74,8 @@ JD_SLOT_DEFINITIONS = [
     ("透明.png", "正面透明底", "800×800", "product"),
 ]
 ORGANIZER_PLATFORMS = {"vip", "jd"}
-INFO_PRODUCT_BOX = (346, 258, 633, 458)
-INFO_LENGTH_LINE_Y = 486
+INFO_PRODUCT_BOX = (359, 283, 621, 465)
+INFO_LENGTH_LINE_Y = 482
 
 PRODUCT_ROLES = {
     "auto",
@@ -1757,6 +1759,107 @@ def _paste_product_floating(
         canvas.paste(rendered.convert("RGB"), (x, y), rendered.getchannel("A"))
 
 
+def _info_measurement_bbox(cutout: Image.Image) -> tuple[int, int, int, int]:
+    """Estimate the bag outline used by the 401 length/height rulers."""
+    alpha = np.asarray(cutout.getchannel("A"))
+    mask = alpha > 28
+    ys, xs = np.where(mask)
+    if not len(xs):
+        return 0, 0, cutout.width, cutout.height
+
+    full_left, full_top = int(xs.min()), int(ys.min())
+    full_right, full_bottom = int(xs.max()) + 1, int(ys.max()) + 1
+    row_counts = mask.sum(axis=1)
+    # A handle or chain may connect to the bag but normally occupies far fewer
+    # pixels per row than the body. Keep the visible body shoulders while
+    # excluding those sparse rows from the physical height ruler.
+    body_rows = row_counts >= max(8, int(round(float(row_counts.max()) * 0.22)))
+    row_run = _mask_longest_run(body_rows)
+    if row_run is None:
+        return full_left, full_top, full_right, full_bottom
+
+    body_top, body_bottom = row_run
+    body_mask = mask[body_top:body_bottom]
+    column_counts = body_mask.sum(axis=0)
+    body_columns = column_counts >= max(2, int(round((body_bottom - body_top) * 0.08)))
+    column_run = _mask_longest_run(body_columns)
+    if column_run is None:
+        body_left, body_right = full_left, full_right
+    else:
+        body_left, body_right = column_run
+    return (
+        max(full_left, body_left),
+        max(full_top, body_top),
+        min(full_right, body_right),
+        min(full_bottom, body_bottom),
+    )
+
+
+def _paste_info_product(
+    canvas: Image.Image,
+    source: Image.Image,
+    adjustment: dict[str, Any] | None,
+) -> tuple[float, float, float, float]:
+    image_id = source.info.get("_organizer_image_id")
+    modified_ns = source.info.get("_organizer_modified_ns")
+    if isinstance(image_id, int) and isinstance(modified_ns, int):
+        cutout = _cached_product_cutout(image_id, modified_ns, _crop_cache_key(adjustment)).copy()
+    else:
+        cutout = _product_cutout(_crop_source(source, adjustment))
+
+    left, top, right, bottom = INFO_PRODUCT_BOX
+    box_width = right - left
+    box_height = bottom - top
+    normalized = _normalize_adjustment(adjustment)
+    scale = min(box_width / cutout.width, box_height / cutout.height) * normalized["zoom"]
+    rendered = cutout.resize(
+        (max(1, round(cutout.width * scale)), max(1, round(cutout.height * scale))),
+        Image.Resampling.LANCZOS,
+    )
+    x = left + (box_width - rendered.width) // 2 + round(normalized["offset_x"] * box_width)
+    y = top + (box_height - rendered.height) // 2 + round(normalized["offset_y"] * box_height)
+    if _has_manual_layout_adjustment(adjustment):
+        safe_left = round(canvas.width * 0.04)
+        safe_top = round(canvas.height * 0.04)
+        safe_right = round(canvas.width * 0.96)
+        safe_bottom = round(canvas.height * 0.96)
+        if rendered.width <= safe_right - safe_left:
+            x = max(safe_left, min(x, safe_right - rendered.width))
+        if rendered.height <= safe_bottom - safe_top:
+            y = max(safe_top, min(y, safe_bottom - rendered.height))
+
+    canvas.paste(rendered.convert("RGB"), (x, y), rendered.getchannel("A"))
+    body_left, body_top, body_right, body_bottom = _info_measurement_bbox(cutout)
+    return (
+        x + body_left * scale,
+        y + body_top * scale,
+        x + body_right * scale,
+        y + body_bottom * scale,
+    )
+
+
+def _info_ruler_geometry(
+    body: tuple[float, float, float, float],
+) -> dict[str, int]:
+    body_left, body_top, body_right, body_bottom = body
+    line_left = round(body_left + 4)
+    line_right = round(body_right - 4)
+    line_width = max(48, line_right - line_left)
+    line_bottom = round(body_bottom - 9)
+    line_top = round(body_top - 5)
+    line_height = max(1, line_bottom - line_top)
+    vertical_x = max(285, line_left - max(34, round(line_width * 0.205)))
+    horizontal_y = min(535, line_bottom + max(24, round(line_height * 0.175)))
+    return {
+        "left": line_left,
+        "right": line_right,
+        "top": line_top,
+        "bottom": line_bottom,
+        "vertical_x": vertical_x,
+        "horizontal_y": horizontal_y,
+    }
+
+
 def _normalized_product_page(
     source: Image.Image,
     size: tuple[int, int] = (800, 800),
@@ -1804,6 +1907,10 @@ def _jd_size_dimensions_ready(product_info: dict[str, str]) -> bool:
     )
 
 
+def _vip_info_ready(product_info: dict[str, str]) -> bool:
+    return _jd_size_dimensions_ready(product_info)
+
+
 def _dimension_mm(value: str) -> str:
     number = _dimension_value_mm(value)
     if number is None:
@@ -1828,9 +1935,8 @@ def _info_page(
     image = Image.new("RGB", (750, 665), "white")
     draw = ImageDraw.Draw(image)
     title = "产品信息"
-    title_font = _font(33, True)
-    title_box = draw.textbbox((0, 0), title, font=title_font)
-    draw.text(((750 - (title_box[2] - title_box[0])) / 2, 42), title, font=title_font, fill="#101010")
+    title_font = _font(32, True)
+    draw.text((290, 40), title, font=title_font, fill="#101010")
 
     rows = [
         ("材质", info.get("main_material") or "待填写"),
@@ -1843,36 +1949,46 @@ def _info_page(
         draw.text((45, y + 34), value[:18], font=_font(19), fill="#555555")
         y += 96
 
+    body = (384.0, 286.0, 594.0, 462.0)
     if product_image is not None:
-        if _has_manual_layout_adjustment(adjustment):
-            _paste_product_floating(image, product_image, INFO_PRODUCT_BOX, adjustment)
-        else:
-            _paste_product(image, product_image, INFO_PRODUCT_BOX, adjustment)
+        body = _paste_info_product(image, product_image, adjustment)
+    ruler = _info_ruler_geometry(body)
 
-    line_color = "#8a8a8a"
-    draw.line((390, 486, 590, 486), fill=line_color, width=2)
-    draw.line((390, 477, 390, 495), fill=line_color, width=2)
-    draw.line((590, 477, 590, 495), fill=line_color, width=2)
-    length_text = _dimension_mm(info.get("product_length") or "")
-    length_box = draw.textbbox((0, 0), length_text, font=_font(18))
-    draw.text((490 - (length_box[2] - length_box[0]) / 2, 500), length_text, font=_font(18), fill="#555555")
+    if _normalize_adjustment(adjustment)["product_show_ruler"]:
+        line_color = "#8a8a8a"
+        horizontal_y = ruler["horizontal_y"]
+        draw.line((ruler["left"], horizontal_y, ruler["right"], horizontal_y), fill=line_color, width=2)
+        draw.line((ruler["left"], horizontal_y - 9, ruler["left"], horizontal_y + 9), fill=line_color, width=2)
+        draw.line((ruler["right"], horizontal_y - 9, ruler["right"], horizontal_y + 9), fill=line_color, width=2)
+        length_text = _dimension_mm(info.get("product_length") or "")
+        length_font = _font(19)
+        length_box = draw.textbbox((0, 0), length_text, font=length_font)
+        length_center = (ruler["left"] + ruler["right"]) / 2
+        draw.text((length_center - (length_box[2] - length_box[0]) / 2, horizontal_y + 16), length_text, font=length_font, fill="#555555")
 
-    draw.line((349, 285, 349, 454), fill=line_color, width=2)
-    draw.line((340, 285, 358, 285), fill=line_color, width=2)
-    draw.line((340, 454, 358, 454), fill=line_color, width=2)
-    _draw_rotated_text(image, _dimension_mm(info.get("product_height") or ""), (299, 333), 90, _font(18))
+        vertical_x = ruler["vertical_x"]
+        draw.line((vertical_x, ruler["top"], vertical_x, ruler["bottom"]), fill=line_color, width=2)
+        draw.line((vertical_x - 9, ruler["top"], vertical_x + 9, ruler["top"]), fill=line_color, width=2)
+        draw.line((vertical_x - 9, ruler["bottom"], vertical_x + 9, ruler["bottom"]), fill=line_color, width=2)
+        _draw_rotated_text(
+            image,
+            _dimension_mm(info.get("product_height") or ""),
+            (vertical_x - 45, ruler["top"] + max(8, (ruler["bottom"] - ruler["top"] - 98) // 2)),
+            90,
+            _font(18),
+        )
 
-    draw.line((634, 486, 690, 457), fill=line_color, width=2)
-    draw.line((628, 478, 639, 493), fill=line_color, width=2)
-    draw.line((685, 450, 696, 465), fill=line_color, width=2)
-    _draw_rotated_text(image, _dimension_mm(info.get("product_width") or ""), (640, 493), 26, _font(18))
+        draw.line((631, 480, 682, 453), fill=line_color, width=2)
+        draw.line((625, 472, 636, 487), fill=line_color, width=2)
+        draw.line((677, 446, 688, 461), fill=line_color, width=2)
+        _draw_rotated_text(image, _dimension_mm(info.get("product_width") or ""), (631, 468), 26, _font(18))
 
     disclaimer = info.get("disclaimer") or "包身长宽高测量均为最长部分\n误差在1-2cm之间因手工测量均属正常"
     notes = [line.strip() for line in disclaimer.splitlines() if line.strip()]
     if len(notes) < 2:
         notes = textwrap.wrap(disclaimer.replace("\n", " "), width=31)[:2]
     for index, line in enumerate(notes):
-        draw.text((329, 580 + index * 27), f"* {line[:34]}", font=_font(15), fill="#222222")
+        draw.text((330, 585 + index * 27), f"* {line[:34]}", font=_font(15), fill="#222222")
     return image
 
 
@@ -1958,8 +2074,13 @@ def _jd_logo_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-@lru_cache(maxsize=1)
-def _jd_elle_logo_layer() -> Image.Image:
+@lru_cache(maxsize=2)
+def _jd_elle_logo_layer(color: str = "black") -> Image.Image:
+    template_path = JD_LOGO_WHITE_PATH if color == "white" else JD_LOGO_BLACK_PATH
+    if template_path.is_file():
+        with Image.open(template_path) as source:
+            return source.convert("RGBA").resize((190, 60), Image.Resampling.LANCZOS)
+
     font = _jd_logo_font(160)
     text = "E L L E"
     bbox = font.getbbox(text)
@@ -1969,7 +2090,10 @@ def _jd_elle_logo_layer() -> Image.Image:
     glyph_bbox = layer.getbbox()
     if glyph_bbox:
         layer = layer.crop(glyph_bbox)
-    return layer.resize((187, 60), Image.Resampling.LANCZOS)
+    mask = layer.resize((190, 60), Image.Resampling.LANCZOS)
+    rendered = Image.new("RGBA", mask.size, "#ffffff" if color == "white" else "#111111")
+    rendered.putalpha(mask)
+    return rendered
 
 
 def _draw_jd_elle_logo(
@@ -1986,9 +2110,8 @@ def _draw_jd_elle_logo(
             int(round(32 * size[0] / 800)),
             int(round(38 * size[1] / 800)),
         )
-    logo_mask = _jd_elle_logo_layer()
-    ink = Image.new("RGB", logo_mask.size, "#ffffff" if color == "white" else "#111111")
-    canvas.paste(ink, position, logo_mask)
+    logo = _jd_elle_logo_layer("white" if color == "white" else "black")
+    canvas.paste(logo.convert("RGB"), position, logo.getchannel("A"))
 
 
 def _jd_model_page(
@@ -2018,6 +2141,7 @@ def _jd_product_page(
     adjustment: dict[str, Any] | None,
     *,
     detail: bool = False,
+    detail_offset_y: float = -0.055,
     logo_color: str = "black",
 ) -> Image.Image:
     canvas = Image.new("RGB", size, "white")
@@ -2029,7 +2153,7 @@ def _jd_product_page(
                 round(size[0] * 0.9125),
                 round(size[1] * 0.92),
             )
-            _paste_detail_layer(canvas, source, detail_box, adjustment, auto_zoom=0.9, auto_offset_y=-0.055)
+            _paste_detail_layer(canvas, source, detail_box, adjustment, auto_zoom=0.9, auto_offset_y=detail_offset_y)
         else:
             _paste_detail_layer(canvas, source, (0, 0, *size), adjustment)
     else:
@@ -2483,7 +2607,14 @@ def _render_jd_slot_image(
     if file_name == "2.jpg":
         return _jd_product_page(source, size, adjustment, logo_color=logo_color)
     if file_name in {"3.jpg", "4.jpg"}:
-        return _jd_product_page(source, size, adjustment, detail=True, logo_color=logo_color)
+        return _jd_product_page(
+            source,
+            size,
+            adjustment,
+            detail=True,
+            detail_offset_y=-0.025 if file_name == "4.jpg" else -0.055,
+            logo_color=logo_color,
+        )
     if file_name == "5.jpg":
         if not _jd_size_dimensions_ready(product_info):
             return None
@@ -2555,6 +2686,8 @@ def _render_slot_image(
         )
     adjustment = adjustments[0] if adjustments else None
     if file_name == "401.jpg":
+        if not _vip_info_ready(product_info):
+            return None
         source = _load_image(image_ids[0]) if image_ids else None
         return _info_page(product_info, source, adjustment)
     if file_name == "606.jpg":
@@ -2742,6 +2875,8 @@ def render_slot_preview(
         raise ValueError("京东预览目录必须是 800 或 750")
     if platform == "jd" and file_name == "5.jpg" and not _jd_size_dimensions_ready(product_info):
         raise ValueError("请先填写商品长和高，再生成尺寸与手机对比图")
+    if platform == "vip" and file_name == "401.jpg" and not _vip_info_ready(product_info):
+        raise ValueError("请先填写商品长和高，再生成产品信息图")
     preview_url = _render_cached_slot_preview(
         session_id,
         file_name,
