@@ -251,11 +251,11 @@ def test_vip_info_only_product_keeps_all_rulers_fixed():
 
     fixed = service._info_ruler_geometry(base_body)
     product_only = service._info_ruler_geometry(base_body)
-    fixed_width = service._info_width_ruler_geometry(base_body, adjusted_body, False)
+    fixed_width = service._info_width_ruler_geometry(base_body)
 
     assert product_only == fixed
-    assert fixed_width["segments"][0] == ((631, 480), (682, 453))
-    assert fixed_width["text"] == (631, 468)
+    assert fixed_width["segments"][0][0][0] > base_body[2]
+    assert fixed_width["segments"][0][0][1] > base_body[3]
 
 
 def test_vip_info_product_and_rulers_share_zoom_and_movement():
@@ -269,12 +269,22 @@ def test_vip_info_product_and_rulers_share_zoom_and_movement():
     )
     base_ruler = service._info_ruler_geometry(base_body)
     adjusted_ruler = service._info_ruler_geometry(adjusted_body)
-    base_width = service._info_width_ruler_geometry(base_body, base_body, False)
-    adjusted_width = service._info_width_ruler_geometry(base_body, adjusted_body, True)
+    base_width = service._info_width_ruler_geometry(base_body)
+    product_adjusted_width = service._info_width_ruler_geometry(base_body, {
+        "zoom": 1.1,
+        "offset_x": 0.08,
+        "offset_y": -0.04,
+    })
+    adjusted_width = service._info_width_ruler_geometry(base_body, {
+        "width_ruler_scale": 1.2,
+        "width_ruler_offset_x": 0.08,
+        "width_ruler_offset_y": -0.04,
+    })
 
     assert adjusted_ruler["right"] - adjusted_ruler["left"] > base_ruler["right"] - base_ruler["left"]
     assert adjusted_ruler["left"] > base_ruler["left"]
     assert adjusted_ruler["top"] < base_ruler["top"]
+    assert product_adjusted_width == base_width
     assert adjusted_width["segments"] != base_width["segments"]
     assert adjusted_width["text"] != base_width["text"]
 

@@ -564,7 +564,7 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         slots = {slot["file_name"]: slot["image_ids"] for slot in result["slots"]}
         jd_slots = {slot["file_name"]: slot["image_ids"] for slot in jd_result["slots"]}
         self.assertEqual(slots["2.jpg"], [1])
-        self.assertEqual(slots["401.jpg"], [1])
+        self.assertEqual(slots["401.jpg"], [5])
         self.assertEqual(slots["606.jpg"], [2, 1, 3, 4])
         self.assertEqual(jd_slots["5.jpg"], [5])
 

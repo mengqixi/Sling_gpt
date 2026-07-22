@@ -40,9 +40,14 @@ type ImageAdjustment = {
   phone_alignment?: "center" | "bottom";
   product_show_ruler?: boolean;
   phone_show_ruler?: boolean;
+  width_ruler_scale?: number;
+  width_ruler_offset_x?: number;
+  width_ruler_offset_y?: number;
 };
 
 type CropSelection = { left: number; top: number; width: number; height: number };
+type AdjustmentTarget = "product" | "phone" | "width_ruler";
+type InfoMoveTarget = "product" | "product_rulers" | "width_ruler";
 
 type ApiRoleNote = {
   role: string;
@@ -100,7 +105,10 @@ const DEFAULT_ADJUSTMENT: ImageAdjustment = {
   phone_offset_y: 0,
   phone_alignment: "bottom",
   product_show_ruler: true,
-  phone_show_ruler: true
+  phone_show_ruler: true,
+  width_ruler_scale: 1,
+  width_ruler_offset_x: 0,
+  width_ruler_offset_y: 0
 };
 
 function normalizeAdjustment(value?: Partial<ImageAdjustment>): ImageAdjustment {
@@ -118,7 +126,8 @@ function mergeAnalyzedSlots(current: Slot[], incoming: Slot[]) {
     const previous = currentByName.get(nextSlot.file_name);
     if (!previous) return nextSlot;
 
-    const preserveManualSources = isManuallyConfirmedSlot(previous);
+    const forceAssignedSource = nextSlot.file_name === "401.jpg" || nextSlot.file_name === "5.jpg";
+    const preserveManualSources = isManuallyConfirmedSlot(previous) && !forceAssignedSource;
     const imageIds = preserveManualSources ? previous.image_ids : nextSlot.image_ids;
     const adjustments = imageIds.map((imageId, index) => {
       if (previous.image_ids[index] === imageId && previous.adjustments?.[index]) {
@@ -670,36 +679,27 @@ function infoRulerGeometry(body: PixelBounds) {
   };
 }
 
-function infoWidthRulerGeometry(baseBody: PixelBounds, currentBody: PixelBounds, linked: boolean) {
-  const segments = [
-    [{ x: 631, y: 480 }, { x: 682, y: 453 }],
-    [{ x: 625, y: 472 }, { x: 636, y: 487 }],
-    [{ x: 677, y: 446 }, { x: 688, y: 461 }]
-  ];
-  // Canvas text rotates around its baseline anchor; this is the visual
-  // equivalent of Pillow's rotated text layer at (631, 468).
-  const text = { x: 659, y: 495 };
-  if (!linked) return { segments, text };
-
-  const baseWidth = Math.max(1, baseBody.right - baseBody.left);
-  const baseHeight = Math.max(1, baseBody.bottom - baseBody.top);
-  const scale = ((currentBody.right - currentBody.left) / baseWidth
-    + (currentBody.bottom - currentBody.top) / baseHeight) / 2;
-  const baseCenter = {
-    x: (baseBody.left + baseBody.right) / 2,
-    y: (baseBody.top + baseBody.bottom) / 2
-  };
-  const currentCenter = {
-    x: (currentBody.left + currentBody.right) / 2,
-    y: (currentBody.top + currentBody.bottom) / 2
+function infoWidthRulerGeometry(baseBody: PixelBounds, draft: ImageAdjustment) {
+  const start = { x: Math.min(660, baseBody.right + 22), y: Math.min(520, baseBody.bottom + 18) };
+  const end = { x: start.x + 51, y: start.y - 27 };
+  const center = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+  const scale = draft.width_ruler_scale || 1;
+  const offset = {
+    x: (draft.width_ruler_offset_x || 0) * 750 * 0.18,
+    y: (draft.width_ruler_offset_y || 0) * 665 * 0.18
   };
   const transform = (point: { x: number; y: number }) => ({
-    x: currentCenter.x + (point.x - baseCenter.x) * scale,
-    y: currentCenter.y + (point.y - baseCenter.y) * scale
+    x: center.x + (point.x - center.x) * scale + offset.x,
+    y: center.y + (point.y - center.y) * scale + offset.y
   });
+  const segments = [
+    [start, end],
+    [{ x: start.x - 6, y: start.y - 8 }, { x: start.x + 5, y: start.y + 7 }],
+    [{ x: end.x - 5, y: end.y - 7 }, { x: end.x + 6, y: end.y + 8 }]
+  ];
   return {
     segments: segments.map(([start, end]) => [transform(start), transform(end)]),
-    text: transform(text)
+    text: transform({ x: start.x + 8, y: start.y + 8 })
   };
 }
 
@@ -1121,7 +1121,7 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         const scaleX = output.width / 750;
         const scaleY = output.height / 665;
         const lineColor = "#777";
-        const layerBounds = productLayer ? liveInfoMeasurementBounds(productLayer) : {
+        const layerBounds = productLayer ? liveProductBodyBounds(productLayer) : {
           left: sourceX,
           top: sourceY,
           right: sourceX + sourceWidth,
@@ -1164,7 +1164,7 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         } : { left: baseDrawX, top: baseDrawY, right: baseDrawX + baseDrawWidth, bottom: baseDrawY + baseDrawHeight };
         const linkedRulers = draft.product_show_ruler !== false;
         const ruler = infoRulerGeometry(linkedRulers ? adjustedBody : baseBody);
-        const widthRuler = infoWidthRulerGeometry(baseBody, adjustedBody, linkedRulers);
+        const widthRuler = infoWidthRulerGeometry(baseBody, draft);
         const lengthValue = Number.parseFloat(productInfo.product_length || "");
         const widthValue = Number.parseFloat(productInfo.product_width || "");
         const heightValue = Number.parseFloat(productInfo.product_height || "");
@@ -1366,13 +1366,16 @@ function SlotAdjustmentEditor({
   const isPhoneComparison = platform === "jd" && slot.file_name === "5.jpg";
   const isInfoPage = platform === "vip" && slot.file_name === "401.jpg";
   const [moveTarget] = useState<"product" | "phone">(initialMoveTarget);
+  const [infoMoveTarget, setInfoMoveTarget] = useState<InfoMoveTarget>(
+    initial.product_show_ruler === false ? "product" : "product_rulers"
+  );
   const [cropSelection, setCropSelection] = useState<CropSelection | null>(null);
   const sourceStageRef = useRef<HTMLDivElement>(null);
   const resultStageRef = useRef<HTMLDivElement>(null);
   const sourceImageRef = useRef<HTMLImageElement>(null);
   const cropStartRef = useRef<{ x: number; y: number } | null>(null);
   const cropSelectionRef = useRef<CropSelection | null>(null);
-  const moveStartRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number; target: "product" | "phone" } | null>(null);
+  const moveStartRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number; target: AdjustmentTarget } | null>(null);
   const pendingMoveRef = useRef<ImageAdjustment | null>(null);
   const moveFrameRef = useRef<number | null>(null);
   const draftRef = useRef<ImageAdjustment>(initial);
@@ -1382,9 +1385,12 @@ function SlotAdjustmentEditor({
   const syncedVersionRef = useRef(initialPreview ? 0 : -1);
   const previewRequestRef = useRef(0);
   const previewAbortRef = useRef<AbortController | null>(null);
-  const moveTargetRef = useRef<"product" | "phone">("product");
+  const moveTargetRef = useRef<AdjustmentTarget>("product");
 
-  moveTargetRef.current = moveTarget;
+  const activeMoveTarget: AdjustmentTarget = isInfoPage && infoMoveTarget === "width_ruler"
+    ? "width_ruler"
+    : moveTarget;
+  moveTargetRef.current = activeMoveTarget;
 
   function slotWithDraft(nextDraft: ImageAdjustment) {
     const adjustments = [...(slot.adjustments || [])];
@@ -1486,6 +1492,11 @@ function SlotAdjustmentEditor({
         applyDraft({
           ...current,
           phone_scale: Math.max(0.5, Math.min(1.8, Math.round(((current.phone_scale || 1) + delta) * 100) / 100))
+        });
+      } else if (moveTargetRef.current === "width_ruler") {
+        applyDraft({
+          ...current,
+          width_ruler_scale: Math.max(0.5, Math.min(2, Math.round(((current.width_ruler_scale || 1) + delta) * 100) / 100))
         });
       } else {
         applyDraft({
@@ -1607,6 +1618,13 @@ function SlotAdjustmentEditor({
       });
       return;
     }
+    if (isInfoPage && infoMoveTarget === "width_ruler") {
+      applyDraft({
+        ...current,
+        width_ruler_scale: Math.max(0.5, Math.min(2, Math.round(((current.width_ruler_scale || 1) + delta) * 100) / 100))
+      });
+      return;
+    }
     applyDraft({
       ...current,
       zoom: Math.max(0.5, Math.min(4, Math.round((current.zoom + delta) * 100) / 100))
@@ -1626,6 +1644,13 @@ function SlotAdjustmentEditor({
         phone_offset_y: DEFAULT_ADJUSTMENT.phone_offset_y,
         phone_alignment: DEFAULT_ADJUSTMENT.phone_alignment,
         phone_show_ruler: DEFAULT_ADJUSTMENT.phone_show_ruler
+      });
+    } else if (isInfoPage && infoMoveTarget === "width_ruler") {
+      applyDraft({
+        ...draftRef.current,
+        width_ruler_scale: DEFAULT_ADJUSTMENT.width_ruler_scale,
+        width_ruler_offset_x: DEFAULT_ADJUSTMENT.width_ruler_offset_x,
+        width_ruler_offset_y: DEFAULT_ADJUSTMENT.width_ruler_offset_y
       });
     } else if (isPhoneComparison) {
       applyDraft({
@@ -1679,7 +1704,7 @@ function SlotAdjustmentEditor({
         <header>
           <div>
             <strong>{slot.file_name} · {slot.title}</strong>
-            <span>{slot.file_name === "606.jpg" ? `正在调整来源 ${sourceIndex + 1}` : isPhoneComparison ? `正在调整${moveTarget === "phone" ? "手机" : "商品图"}` : "当前输出位置独立调整"}</span>
+            <span>{slot.file_name === "606.jpg" ? `正在调整来源 ${sourceIndex + 1}` : isPhoneComparison ? `正在调整${moveTarget === "phone" ? "手机" : "商品图"}` : isInfoPage ? `正在调整${infoMoveTarget === "width_ruler" ? "宽标线" : infoMoveTarget === "product" ? "商品图" : "商品图和长高标线"}` : "当前输出位置独立调整"}</span>
           </div>
           <button type="button" className="icon-button" onClick={onClose} title="关闭"><X size={21} /></button>
         </header>
@@ -1731,9 +1756,9 @@ function SlotAdjustmentEditor({
                 moveStartRef.current = {
                   x: event.clientX,
                   y: event.clientY,
-                  offsetX: moveTarget === "phone" ? draft.phone_offset_x || 0 : draft.offset_x,
-                  offsetY: moveTarget === "phone" ? draft.phone_offset_y || 0 : draft.offset_y,
-                  target: moveTarget
+                  offsetX: activeMoveTarget === "phone" ? draft.phone_offset_x || 0 : activeMoveTarget === "width_ruler" ? draft.width_ruler_offset_x || 0 : draft.offset_x,
+                  offsetY: activeMoveTarget === "phone" ? draft.phone_offset_y || 0 : activeMoveTarget === "width_ruler" ? draft.width_ruler_offset_y || 0 : draft.offset_y,
+                  target: activeMoveTarget
                 };
               }}
               onPointerMove={(event) => {
@@ -1744,7 +1769,9 @@ function SlotAdjustmentEditor({
                 const nextOffsetY = Math.max(-1.5, Math.min(1.5, start.offsetY + (event.clientY - start.y) / bounds.height));
                 pendingMoveRef.current = start.target === "phone"
                   ? { ...draftRef.current, phone_offset_x: nextOffsetX, phone_offset_y: nextOffsetY }
-                  : { ...draftRef.current, offset_x: nextOffsetX, offset_y: nextOffsetY };
+                  : start.target === "width_ruler"
+                    ? { ...draftRef.current, width_ruler_offset_x: nextOffsetX, width_ruler_offset_y: nextOffsetY }
+                    : { ...draftRef.current, offset_x: nextOffsetX, offset_y: nextOffsetY };
                 if (moveFrameRef.current === null) {
                   moveFrameRef.current = window.requestAnimationFrame(() => {
                     moveFrameRef.current = null;
@@ -1790,21 +1817,34 @@ function SlotAdjustmentEditor({
 
         <div className="slot-adjustment-controls">
           {(isPhoneComparison || isInfoPage) && <div className="slot-phone-controls" role="group" aria-label={isInfoPage ? "产品信息图调整" : "手机对比调整"}>
-            <span>{isPhoneComparison && moveTarget === "phone" ? "手机标线" : "商品标线"}</span>
+            <span>{isInfoPage ? "调整对象" : isPhoneComparison && moveTarget === "phone" ? "手机标线" : "商品标线"}</span>
             {isPhoneComparison && moveTarget === "phone" ? <>
               <button type="button" className={draft.phone_show_ruler === false ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_show_ruler: false })}>仅手机</button>
               <button type="button" className={draft.phone_show_ruler !== false ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_show_ruler: true })}>手机和标线</button>
               <span>对齐</span>
               <button type="button" className={(draft.phone_alignment || "center") === "center" ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_alignment: "center" })}>中心同高</button>
               <button type="button" className={draft.phone_alignment === "bottom" ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_alignment: "bottom" })}>底部齐平</button>
+            </> : isInfoPage ? <>
+              <button type="button" className={infoMoveTarget === "product" ? "active-tool" : ""} onClick={() => {
+                setInfoMoveTarget("product");
+                if (draftRef.current.product_show_ruler !== false) applyDraft({ ...draftRef.current, product_show_ruler: false });
+              }}>仅商品图</button>
+              <button type="button" className={infoMoveTarget === "product_rulers" ? "active-tool" : ""} onClick={() => {
+                setInfoMoveTarget("product_rulers");
+                if (draftRef.current.product_show_ruler === false) applyDraft({ ...draftRef.current, product_show_ruler: true });
+              }}>商品图和长高标线</button>
+              <button type="button" className={infoMoveTarget === "width_ruler" ? "active-tool" : ""} onClick={() => {
+                setInfoMoveTarget("width_ruler");
+                setCropMode(false);
+              }}>宽标线</button>
             </> : <>
               <button type="button" className={draft.product_show_ruler === false ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, product_show_ruler: false })}>仅商品图</button>
               <button type="button" className={draft.product_show_ruler !== false ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, product_show_ruler: true })}>商品图和标线</button>
             </>}
           </div>}
-          {(!isPhoneComparison || moveTarget === "product") && <button type="button" className={cropMode ? "active-tool" : ""} onClick={toggleCropMode}><Crop size={18} />裁剪</button>}
+          {(!isPhoneComparison || moveTarget === "product") && (!isInfoPage || infoMoveTarget !== "width_ruler") && <button type="button" className={cropMode ? "active-tool" : ""} onClick={toggleCropMode}><Crop size={18} />裁剪</button>}
           <button type="button" onClick={() => changeZoom(-0.05)}><ZoomOut size={18} />缩小</button>
-          <span className="slot-zoom-value">{Math.round((isPhoneComparison && moveTarget === "phone" ? draft.phone_scale || 1 : draft.zoom) * 100)}%</span>
+          <span className="slot-zoom-value">{Math.round((activeMoveTarget === "phone" ? draft.phone_scale || 1 : activeMoveTarget === "width_ruler" ? draft.width_ruler_scale || 1 : draft.zoom) * 100)}%</span>
           <button type="button" onClick={() => changeZoom(0.05)}><ZoomIn size={18} />放大</button>
           {supportsLogoColor && <div className="slot-logo-color" role="group" aria-label="左上角 Logo 颜色">
             <span>Logo</span>
@@ -1823,9 +1863,9 @@ function SlotAdjustmentEditor({
             onClick={() => void refreshPreview(draftRef.current, draftVersionRef.current)}
           ><CheckCircle2 size={18} />{previewSynced ? "预览已确认" : "确认预览"}</button>
           <span className="slot-drag-hint"><Move size={16} />位置 {
-            Math.round((isPhoneComparison && moveTarget === "phone" ? draft.phone_offset_x || 0 : draft.offset_x) * 100)
+            Math.round((activeMoveTarget === "phone" ? draft.phone_offset_x || 0 : activeMoveTarget === "width_ruler" ? draft.width_ruler_offset_x || 0 : draft.offset_x) * 100)
           } / {
-            Math.round((isPhoneComparison && moveTarget === "phone" ? draft.phone_offset_y || 0 : draft.offset_y) * 100)
+            Math.round((activeMoveTarget === "phone" ? draft.phone_offset_y || 0 : activeMoveTarget === "width_ruler" ? draft.width_ruler_offset_y || 0 : draft.offset_y) * 100)
           }</span>
           {!previewSynced && <span className="slot-preview-pending">调整后请先确认预览</span>}
           <button type="button" className="primary" disabled={busy || !previewSynced} onClick={() => void saveAdjustment()}><Save size={18} />保存调整</button>
@@ -2814,7 +2854,8 @@ export default function VipOrganizer() {
                 {group.slots.map((slot) => {
                   const count = slot.file_name === "606.jpg" ? 4 : 1;
                   const isLockedJdFront = platform === "jd" && slot.file_name === "5.jpg";
-                  const editableSource = !isLockedJdFront && (slot.kind !== "generated" || slot.file_name === "401.jpg");
+                  const isLockedInfoFront = platform === "vip" && slot.file_name === "401.jpg";
+                  const editableSource = !isLockedJdFront && !isLockedInfoFront && slot.kind !== "generated";
                   const previewKey = slotPreviewKey(platform, slot.file_name, group.folder);
                   const dimensionsReady = jdComparisonDimensionsReady(organizerProductInfo());
                   const outputReady = !((platform === "jd" && slot.file_name === "5.jpg")
@@ -2858,10 +2899,10 @@ export default function VipOrganizer() {
                         disabled={!slot.image_ids[0] || !outputReady}
                         onClick={() => openAdjustmentEditor(slot.file_name, 0, group.folder)}
                       ><Crop size={16} />调整成品</button>}
-                      {isLockedJdFront && <label>来源图片
+                      {(isLockedJdFront || isLockedInfoFront) && <label>来源图片
                         <span className="organizer-source-picker">
-                          <select value={slot.image_ids[0] || ""} disabled aria-label="京东5固定使用正面主图">
-                            <option value={slot.image_ids[0] || ""}>{selectedAsset(slot.image_ids[0]) ? assetOptionLabel(selectedAsset(slot.image_ids[0]), "product") : "正面主图"}</option>
+                          <select value={slot.image_ids[0] || ""} disabled aria-label={isLockedInfoFront ? "401固定优先使用透明正面图" : "京东5固定使用正面主图"}>
+                            <option value={slot.image_ids[0] || ""}>{selectedAsset(slot.image_ids[0]) ? assetOptionLabel(selectedAsset(slot.image_ids[0]), "product") : isLockedInfoFront ? "透明正面图" : "正面主图"}</option>
                           </select>
                         </span>
                       </label>}

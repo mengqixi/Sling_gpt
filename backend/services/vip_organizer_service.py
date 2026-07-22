@@ -1320,7 +1320,7 @@ def analyze_assets(
         "15.jpg": ([interior_id], selection_confidence(interior_view, tag="interior"), "优先使用带内里或内袋标签的局部细节"),
         "30.png": ([front_id], 98 if has_transparent else 35, "检测到透明通道" if has_transparent else "未检测到透明图，暂用正面候选图"),
         "50.jpg": (model_pick(0), 88 if models else 0, "与1.jpg使用同一张模特图，仅按竖版规格重新排版"),
-        "401.jpg": ([angle_view["id"]], selection_confidence(angle_view, role=angle_role), "按示例优先使用半侧面产品图和商品资料套用信息页模板"),
+        "401.jpg": ([front_id], 98 if has_transparent else selection_confidence(front_view, role="front"), "优先使用透明正面图生成产品信息页，缺少时回退正面主图"),
         "601.jpg": (model_pick(0), 90 if models else 0, "模特图自动留白排版"),
         "602.jpg": (model_pick(1), 90 if models else 0, "模特图自动留白排版"),
         "603.jpg": (model_pick(2), 90 if models else 0, "模特图自动留白排版"),
@@ -1519,6 +1519,9 @@ def _normalize_adjustment(value: dict[str, Any] | None) -> dict[str, Any]:
         "phone_alignment": "center" if value.get("phone_alignment") == "center" else "bottom",
         "product_show_ruler": value.get("product_show_ruler") is not False,
         "phone_show_ruler": value.get("phone_show_ruler") is not False,
+        "width_ruler_scale": number("width_ruler_scale", 1.0, 0.5, 2.0),
+        "width_ruler_offset_x": number("width_ruler_offset_x", 0.0, -1.5, 1.5),
+        "width_ruler_offset_y": number("width_ruler_offset_y", 0.0, -1.5, 1.5),
     }
 
 
@@ -1889,7 +1892,7 @@ def _paste_info_product(
             y = max(safe_top, min(y, safe_bottom - rendered.height))
 
     canvas.paste(rendered.convert("RGB"), (x, y), rendered.getchannel("A"))
-    body_left, body_top, body_right, body_bottom = _info_measurement_bbox(cutout)
+    body_left, body_top, body_right, body_bottom = _jd_product_body_bbox(cutout)
     return (
         x + body_left * scale,
         y + body_top * scale,
@@ -1922,38 +1925,33 @@ def _info_ruler_geometry(
 
 def _info_width_ruler_geometry(
     base_body: tuple[float, float, float, float],
-    current_body: tuple[float, float, float, float],
-    linked: bool,
+    adjustment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    segments = [
-        ((631, 480), (682, 453)),
-        ((625, 472), (636, 487)),
-        ((677, 446), (688, 461)),
-    ]
-    text_point = (631, 468)
-    if not linked:
-        return {"segments": segments, "text": text_point, "scale": 1.0}
-
-    base_left, base_top, base_right, base_bottom = base_body
-    current_left, current_top, current_right, current_bottom = current_body
-    base_width = max(1.0, base_right - base_left)
-    base_height = max(1.0, base_bottom - base_top)
-    scale = (
-        (current_right - current_left) / base_width
-        + (current_bottom - current_top) / base_height
-    ) / 2
-    base_center = ((base_left + base_right) / 2, (base_top + base_bottom) / 2)
-    current_center = ((current_left + current_right) / 2, (current_top + current_bottom) / 2)
+    normalized = _normalize_adjustment(adjustment)
+    _, _, body_right, body_bottom = base_body
+    start = (min(660.0, body_right + 22.0), min(520.0, body_bottom + 18.0))
+    end = (start[0] + 51.0, start[1] - 27.0)
+    center = ((start[0] + end[0]) / 2, (start[1] + end[1]) / 2)
+    scale = normalized["width_ruler_scale"]
+    offset = (
+        normalized["width_ruler_offset_x"] * 750 * 0.18,
+        normalized["width_ruler_offset_y"] * 665 * 0.18,
+    )
 
     def transform(point: tuple[float, float]) -> tuple[int, int]:
         return (
-            round(current_center[0] + (point[0] - base_center[0]) * scale),
-            round(current_center[1] + (point[1] - base_center[1]) * scale),
+            round(center[0] + (point[0] - center[0]) * scale + offset[0]),
+            round(center[1] + (point[1] - center[1]) * scale + offset[1]),
         )
 
+    segments = [
+        (start, end),
+        ((start[0] - 6, start[1] - 8), (start[0] + 5, start[1] + 7)),
+        ((end[0] - 5, end[1] - 7), (end[0] + 6, end[1] + 8)),
+    ]
     return {
         "segments": [(transform(start), transform(end)) for start, end in segments],
-        "text": transform(text_point),
+        "text": transform((start[0] + 8, start[1] + 8)),
         "scale": scale,
     }
 
@@ -2072,7 +2070,7 @@ def _info_page(
     linked_rulers = normalized["product_show_ruler"]
     ruler_body = body if linked_rulers else base_body
     ruler = _info_ruler_geometry(ruler_body)
-    width_ruler = _info_width_ruler_geometry(base_body, body, linked_rulers)
+    width_ruler = _info_width_ruler_geometry(base_body, adjustment)
 
     line_color = "#8a8a8a"
     horizontal_y = ruler["horizontal_y"]
