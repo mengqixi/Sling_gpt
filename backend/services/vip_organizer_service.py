@@ -41,7 +41,7 @@ JD_LOGO_BLACK_PATH = Path(__file__).resolve().parents[1] / "assets" / "elle_logo
 JD_LOGO_WHITE_PATH = Path(__file__).resolve().parents[1] / "assets" / "elle_logo_white.png"
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
-PREVIEW_RENDER_VERSION = 17
+PREVIEW_RENDER_VERSION = 18
 MAX_PREVIEW_CACHE_ENTRIES = 48
 JD_PHONE_HEIGHT_MM = 163.0
 JD_PHONE_LABEL = "iPhone 17 Pro Max"
@@ -1678,12 +1678,14 @@ def _paste_detail_layer(
     clip_box: tuple[int, int, int, int] | None = None,
     auto_zoom: float = 0.9,
     auto_offset_y: float = -0.045,
+    auto_handle_layout: bool = False,
     default_mode: str = "cover",
 ) -> None:
     cropped = _crop_source(source, adjustment)
     if not _has_manual_crop(adjustment) and _has_light_studio_border(cropped):
         cutout = _product_cutout(cropped)
         normalized = _normalize_adjustment(adjustment)
+        handle_offset_y = -0.04 * _handle_visual_lift(cutout) if auto_handle_layout else 0.0
         _paste_layer(
             canvas,
             cutout,
@@ -1691,7 +1693,7 @@ def _paste_detail_layer(
             {
                 "zoom": normalized["zoom"] * auto_zoom,
                 "offset_x": normalized["offset_x"],
-                "offset_y": normalized["offset_y"] + auto_offset_y,
+                "offset_y": normalized["offset_y"] + auto_offset_y + handle_offset_y,
             },
             mode="contain",
             clip_box=clip_box,
@@ -1714,6 +1716,7 @@ def _paste_product(
     adjustment: dict[str, Any] | None = None,
     *,
     clip_box: tuple[int, int, int, int] | None = None,
+    auto_handle_layout: bool = False,
 ) -> None:
     image_id = source.info.get("_organizer_image_id")
     modified_ns = source.info.get("_organizer_modified_ns")
@@ -1725,7 +1728,14 @@ def _paste_product(
         ).copy()
     else:
         cutout = _product_cutout(_crop_source(source, adjustment))
-    _paste_layer(canvas, cutout, box, adjustment, clip_box=clip_box)
+    layout_adjustment = adjustment
+    if auto_handle_layout and not _has_manual_crop(adjustment):
+        normalized = _normalize_adjustment(adjustment)
+        layout_adjustment = {
+            **normalized,
+            "offset_y": normalized["offset_y"] - 0.065 * _handle_visual_lift(cutout),
+        }
+    _paste_layer(canvas, cutout, box, layout_adjustment, clip_box=clip_box)
 
 
 def _paste_product_floating(
@@ -1787,7 +1797,7 @@ def _info_measurement_bbox(cutout: Image.Image) -> tuple[int, int, int, int]:
     # Handles, chain loops and sparse hardware can be visually thick while
     # still covering far less of each row than the actual bag body.
     max_row_count = float(row_counts.max())
-    body_rows = row_counts >= max(8, int(round(max_row_count * 0.38)))
+    body_rows = row_counts >= max(8, int(round(max_row_count * 0.65)))
     full_width = max(1, full_right - full_left)
     row_fill = np.divide(
         row_counts,
@@ -1826,6 +1836,23 @@ def _info_measurement_bbox(cutout: Image.Image) -> tuple[int, int, int, int]:
         min(full_right, body_right),
         min(full_bottom, body_bottom),
     )
+
+
+def _handle_visual_lift(cutout: Image.Image) -> float:
+    """Return a proportional upward shift for handles above the solid bag body."""
+    alpha = np.asarray(cutout.getchannel("A"))
+    ys, _ = np.where(alpha > 28)
+    if not len(ys):
+        return 0.0
+    full_top = int(ys.min())
+    full_bottom = int(ys.max()) + 1
+    _, body_top, _, body_bottom = _info_measurement_bbox(cutout)
+    body_height = max(1, body_bottom - body_top)
+    headroom = max(0, body_top - full_top)
+    if headroom < max(6, round((full_bottom - full_top) * 0.04)):
+        return 0.0
+    ratio = headroom / body_height
+    return max(0.0, min(1.0, (ratio - 0.06) / 0.28))
 
 
 def _paste_info_product(
@@ -1937,6 +1964,8 @@ def _normalized_product_page(
     box: tuple[int, int, int, int] | None = None,
     transparent: bool = False,
     adjustment: dict[str, Any] | None = None,
+    auto_handle_layout: bool = False,
+    manual_padding_ratio: float | None = None,
 ) -> Image.Image:
     """Normalize non-model assets into a stable safe area regardless of source whitespace."""
     width, height = size
@@ -1948,14 +1977,25 @@ def _normalized_product_page(
     )
     background = (255, 255, 255, 0) if transparent else "white"
     canvas = Image.new("RGBA" if transparent else "RGB", size, background)
-    clip_box = _expanded_safe_box(safe_box, size) if _has_manual_layout_adjustment(adjustment) else None
-    _paste_product(canvas, source, safe_box, adjustment, clip_box=clip_box)
+    clip_box = _expanded_safe_box(
+        safe_box,
+        size,
+        padding_ratio=manual_padding_ratio if manual_padding_ratio is not None else (0.18 if auto_handle_layout else 0.055),
+    ) if _has_manual_layout_adjustment(adjustment) else None
+    _paste_product(
+        canvas,
+        source,
+        safe_box,
+        adjustment,
+        clip_box=clip_box,
+        auto_handle_layout=auto_handle_layout,
+    )
     return canvas
 
 
 def _catalog_product_page(source: Image.Image, adjustment: dict[str, Any] | None = None) -> Image.Image:
     """Match the catalog reference with a stable white border and a lower visual center."""
-    return _normalized_product_page(source, adjustment=adjustment)
+    return _normalized_product_page(source, adjustment=adjustment, auto_handle_layout=True)
 
 
 def _dimension_value_mm(value: str | None) -> float | None:
@@ -2096,7 +2136,7 @@ def _detail_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None
     draw.text(((750 - (title_box[2] - title_box[0])) / 2, 70), title, font=title_font, fill="#c4c4c4")
     box = (52, 181, 695, 704)
     if _has_manual_layout_adjustment(adjustment):
-        clip_box = _expanded_safe_box(box, canvas.size)
+        clip_box = _expanded_safe_box(box, canvas.size, padding_ratio=0.14)
     elif _has_light_studio_border(source):
         clip_box = _expanded_safe_box(box, canvas.size)
     else:
@@ -2132,7 +2172,7 @@ def _multi_angle_page(
     adjustments = adjustments or []
     for index, (image_id, box) in enumerate(zip(image_ids[:4], boxes)):
         adjustment = adjustments[index] if index < len(adjustments) else None
-        clip_box = _expanded_safe_box(box, canvas.size, padding_ratio=0.035) if _has_manual_layout_adjustment(adjustment) else None
+        clip_box = _expanded_safe_box(box, canvas.size, padding_ratio=0.06) if _has_manual_layout_adjustment(adjustment) else None
         _paste_product(canvas, _load_image(image_id), box, adjustment, clip_box=clip_box)
     draw.line((346, 420, 404, 420), fill="#a8a8a8", width=2)
     draw.line((375, 391, 375, 449), fill="#a8a8a8", width=2)
@@ -2226,27 +2266,35 @@ def _jd_product_page(
     *,
     detail: bool = False,
     detail_offset_y: float = -0.055,
+    handle_aware: bool = False,
     logo_color: str = "black",
 ) -> Image.Image:
     canvas = Image.new("RGB", size, "white")
     if detail:
-        if not _has_manual_layout_adjustment(adjustment) and _has_light_studio_border(source):
-            detail_box = (
-                round(size[0] * 0.0875),
-                round(size[1] * 0.145),
-                round(size[0] * 0.9125),
-                round(size[1] * 0.92),
-            )
-            _paste_detail_layer(canvas, source, detail_box, adjustment, auto_zoom=0.9, auto_offset_y=detail_offset_y)
-        else:
-            _paste_detail_layer(canvas, source, (0, 0, *size), adjustment)
+        detail_box = (
+            round(size[0] * 0.0875),
+            round(size[1] * 0.145),
+            round(size[0] * 0.9125),
+            round(size[1] * 0.92),
+        )
+        clip_box = _expanded_safe_box(detail_box, size, padding_ratio=0.14) if _has_manual_layout_adjustment(adjustment) else None
+        _paste_detail_layer(
+            canvas,
+            source,
+            detail_box,
+            adjustment,
+            clip_box=clip_box,
+            auto_zoom=0.9,
+            auto_offset_y=detail_offset_y,
+            auto_handle_layout=handle_aware,
+        )
     else:
         if size == (800, 800):
             box = (100, 135, 700, 700)
         else:
             box = (100, 145, 650, 900)
-        clip_box = _expanded_safe_box(box, size) if _has_manual_layout_adjustment(adjustment) else None
-        _paste_product(canvas, source, box, adjustment, clip_box=clip_box)
+        clip_box = _expanded_safe_box(box, size, padding_ratio=0.18) if _has_manual_layout_adjustment(adjustment) else None
+        _paste_product(canvas, source, box, adjustment, clip_box=clip_box, auto_handle_layout=True)
     _draw_jd_elle_logo(canvas, size, logo_color)
     return canvas
 
@@ -2730,7 +2778,8 @@ def _render_jd_slot_image(
             size,
             adjustment,
             detail=True,
-            detail_offset_y=-0.025 if file_name == "4.jpg" else -0.055,
+            detail_offset_y=-0.055,
+            handle_aware=file_name == "3.jpg",
             logo_color=logo_color,
         )
     if file_name == "5.jpg":
@@ -2738,7 +2787,7 @@ def _render_jd_slot_image(
             return None
         return _jd_size_comparison_page(source, size, product_info, adjustment, logo_color)
     if file_name == "透明.png":
-        return _normalized_product_page(source, transparent=True, adjustment=adjustment)
+        return _normalized_product_page(source, transparent=True, adjustment=adjustment, manual_padding_ratio=0.18)
     return None
 
 
@@ -2819,20 +2868,27 @@ def _render_slot_image(
         _paste_layer(canvas, _crop_source(source.convert("RGB"), adjustment), (0, 0, 800, 800), adjustment, mode=_crop_aware_mode(adjustment, "cover"))
         return canvas
     if file_name == "30.png":
-        return _normalized_product_page(source, transparent=True, adjustment=adjustment)
+        return _normalized_product_page(source, transparent=True, adjustment=adjustment, manual_padding_ratio=0.18)
     if file_name == "50.jpg":
         canvas = Image.new("RGB", (950, 1200), "white")
         _paste_layer(canvas, _crop_source(source.convert("RGB"), adjustment), (0, 0, 950, 1200), adjustment, mode=_crop_aware_mode(adjustment, "cover"))
         return canvas
     if file_name == "4.jpg":
         canvas = Image.new("RGB", (800, 800), "white")
+        box = (72, 72, 728, 728)
+        clip_box = _expanded_safe_box(
+            box,
+            canvas.size,
+            padding_ratio=0.18,
+        ) if _has_manual_layout_adjustment(adjustment) else None
         _paste_detail_layer(
             canvas,
             source,
-            (0, 0, 800, 800),
+            box,
             adjustment,
-            auto_zoom=0.82,
-            auto_offset_y=-0.08,
+            clip_box=clip_box,
+            auto_zoom=1.0,
+            auto_offset_y=-0.10,
             default_mode="contain",
         )
         return canvas

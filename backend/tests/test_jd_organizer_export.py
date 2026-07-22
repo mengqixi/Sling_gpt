@@ -130,7 +130,7 @@ def test_401_manual_product_layer_can_move_outside_original_box():
 
 def test_expanded_safe_boxes_match_editor_padding_rules():
     assert service._expanded_safe_box((120, 170, 680, 710), (800, 800)) == (76, 126, 724, 754)
-    assert service._expanded_safe_box((78, 195, 323, 365), (750, 750), padding_ratio=0.035) == (52, 169, 349, 391)
+    assert service._expanded_safe_box((78, 195, 323, 365), (750, 750), padding_ratio=0.06) == (33, 150, 368, 410)
 
 
 def test_jd_shape_profiles_cover_extreme_and_common_handbag_proportions():
@@ -212,6 +212,24 @@ def test_vip_info_measurement_includes_hobo_body_shoulders():
     assert bottom >= 380
     assert left <= 55
     assert right >= 465
+
+
+def test_handle_visual_lift_scales_with_handle_height():
+    def handbag(handle_top: int | None) -> Image.Image:
+        layer = Image.new("RGBA", (440, 440), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(layer)
+        if handle_top is not None:
+            draw.arc((120, handle_top, 320, 285), 180, 360, fill=(30, 30, 30, 255), width=24)
+        draw.rectangle((45, 180, 395, 410), fill=(70, 70, 70, 255))
+        return layer
+
+    no_handle = service._handle_visual_lift(handbag(None))
+    low_handle = service._handle_visual_lift(handbag(145))
+    high_handle = service._handle_visual_lift(handbag(20))
+
+    assert no_handle == 0
+    assert 0 <= low_handle < high_handle
+    assert high_handle > 0.5
 
 
 def _vip_info_test_source() -> Image.Image:
@@ -483,6 +501,12 @@ class JdOrganizerGeometryTests(unittest.TestCase):
 
     def test_vip_info_excludes_thick_handles(self):
         test_vip_info_measurement_excludes_thick_tote_handles()
+
+    def test_vip_info_includes_hobo_shoulders(self):
+        test_vip_info_measurement_includes_hobo_body_shoulders()
+
+    def test_handle_lift_is_proportional(self):
+        test_handle_visual_lift_scales_with_handle_height()
 
     def test_vip_info_product_only_keeps_rulers_fixed(self):
         test_vip_info_only_product_keeps_all_rulers_fixed()

@@ -157,7 +157,7 @@ function slotCanvasSize(size: string, platform?: OrganizerPlatform, targetFolder
 
 function slotPreviewLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex: number, targetFolder: PreviewFolder) {
   if (platform === "jd") {
-    if (["0-无logo.jpg", "1.jpg", "3.jpg", "4.jpg"].includes(slot.file_name)) {
+    if (["0-无logo.jpg", "1.jpg"].includes(slot.file_name)) {
       return { x: 0, y: 0, width: 1, height: 1, mode: "cover" as const };
     }
     if (slot.file_name === "2.jpg") {
@@ -169,6 +169,9 @@ function slotPreviewLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex:
       return targetFolder === "750"
         ? { x: 0.08, y: 0.16, width: 0.43, height: 0.58, mode: "contain" as const }
         : { x: 0.08, y: 0.16, width: 0.43, height: 0.58, mode: "contain" as const };
+    }
+    if (["3.jpg", "4.jpg"].includes(slot.file_name)) {
+      return { x: 0.0875, y: 0.145, width: 0.825, height: 0.775, mode: "cover" as const };
     }
     return { x: 0.15, y: 0.2125, width: 0.7, height: 0.675, mode: "contain" as const };
   }
@@ -187,7 +190,10 @@ function slotPreviewLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex:
     ];
     return positions[sourceIndex] || positions[0];
   }
-  if (["4.jpg", "15.jpg"].includes(slot.file_name)) {
+  if (slot.file_name === "4.jpg") {
+    return { x: 0.09, y: 0.09, width: 0.82, height: 0.82, mode: "contain" as const };
+  }
+  if (slot.file_name === "15.jpg") {
     return { x: 0, y: 0, width: 1, height: 1, mode: "contain" as const };
   }
   if (["601.jpg", "602.jpg", "603.jpg"].includes(slot.file_name)) {
@@ -216,11 +222,16 @@ function slotEditorSafeAreaLayout(slot: Slot, platform: OrganizerPlatform, sourc
   if (platform === "jd" && slot.file_name === "5.jpg") {
     return { x: 0.04, y: 0.04, width: 0.92, height: 0.92 };
   }
+  if (["2.jpg", "3.jpg", "4.jpg"].includes(slot.file_name) || slot.file_name.endsWith(".png")) {
+    return { x: 0.04, y: 0.04, width: 0.92, height: 0.92 };
+  }
   const template = slotPreviewLayout(slot, platform, sourceIndex, targetFolder);
   if (template.x <= 0.04 && template.y <= 0.04 && template.x + template.width >= 0.96 && template.y + template.height >= 0.96) {
     return template;
   }
-  const padding = slot.file_name === "606.jpg" ? 0.035 : 0.055;
+  const padding = slot.file_name === "606.jpg"
+    ? 0.06
+    : ["604.jpg", "605.jpg"].includes(slot.file_name) ? 0.14 : 0.055;
   const left = Math.max(0.04, template.x - padding);
   const top = Math.max(0.04, template.y - padding);
   const right = Math.min(0.96, template.x + template.width + padding);
@@ -321,6 +332,7 @@ const livePreviewImageCache = new Map<string, HTMLImageElement>();
 const livePreviewBoundsCache = new Map<string, { left: number; top: number; right: number; bottom: number }>();
 const livePreviewCutoutCache = new Map<string, HTMLCanvasElement>();
 const livePreviewLightBorderCache = new Map<string, boolean>();
+let liveHandleLiftCache = new WeakMap<HTMLCanvasElement, number>();
 type PixelBounds = { left: number; top: number; right: number; bottom: number };
 type LiveProductLayer = { canvas: HTMLCanvasElement; body: PixelBounds };
 const liveJdProductLayerCache = new Map<string, LiveProductLayer>();
@@ -330,6 +342,7 @@ function clearLivePreviewCaches() {
   livePreviewBoundsCache.clear();
   livePreviewCutoutCache.clear();
   livePreviewLightBorderCache.clear();
+  liveHandleLiftCache = new WeakMap<HTMLCanvasElement, number>();
   liveJdProductLayerCache.clear();
 }
 
@@ -589,7 +602,7 @@ function liveInfoMeasurementBounds(canvas: HTMLCanvasElement): PixelBounds {
   const maxRowWidth = Math.max(...rowCounts);
   const fullWidth = Math.max(1, fullRight - fullLeft);
   const broadRun = longestTrueRun(rowCounts.map((count, index) => {
-    const coreBody = count >= Math.max(8, Math.round(maxRowWidth * 0.38));
+    const coreBody = count >= Math.max(8, Math.round(maxRowWidth * 0.65));
     const fill = rowSpans[index] > 0 ? count / rowSpans[index] : 0;
     const crescentShoulder = count >= Math.max(6, Math.round(maxRowWidth * 0.10))
       && rowSpans[index] >= Math.max(12, Math.round(fullWidth * 0.55))
@@ -612,6 +625,32 @@ function liveInfoMeasurementBounds(canvas: HTMLCanvasElement): PixelBounds {
     right: columnRun ? Math.min(fullRight, columnRun.end) : fullRight,
     bottom: Math.min(fullBottom, broadRun.end)
   };
+}
+
+function liveHandleVisualLift(canvas: HTMLCanvasElement) {
+  const cached = liveHandleLiftCache.get(canvas);
+  if (cached !== undefined) return cached;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return 0;
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  let fullTop = canvas.height;
+  let fullBottom = 0;
+  for (let y = 0; y < canvas.height; y += 1) {
+    for (let x = 0; x < canvas.width; x += 1) {
+      if (pixels[(y * canvas.width + x) * 4 + 3] <= 28) continue;
+      fullTop = Math.min(fullTop, y);
+      fullBottom = Math.max(fullBottom, y + 1);
+    }
+  }
+  if (fullBottom <= fullTop) return 0;
+  const body = liveInfoMeasurementBounds(canvas);
+  const headroom = Math.max(0, body.top - fullTop);
+  const bodyHeight = Math.max(1, body.bottom - body.top);
+  const lift = headroom < Math.max(6, Math.round((fullBottom - fullTop) * 0.04))
+    ? 0
+    : Math.max(0, Math.min(1, (headroom / bodyHeight - 0.06) / 0.28));
+  liveHandleLiftCache.set(canvas, lift);
+  return lift;
 }
 
 function infoRulerGeometry(body: PixelBounds) {
@@ -1030,16 +1069,24 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       const fitScale = area.mode === "cover" && !hasManualCrop && !usesAutomaticDetailCutout
         ? Math.max(areaWidth / sourceWidth, areaHeight / sourceHeight)
         : Math.min(areaWidth / sourceWidth, areaHeight / sourceHeight);
-      const automaticDetailScale = usesAutomaticDetailCutout ? (platform === "jd" ? 0.9 : 0.82) : 1;
+      const automaticDetailScale = usesAutomaticDetailCutout
+        ? (platform === "jd" ? 0.9 : slot.file_name === "4.jpg" ? 1 : 0.82)
+        : 1;
       const drawWidth = sourceWidth * fitScale * draft.zoom * automaticDetailScale;
       const drawHeight = sourceHeight * fitScale * draft.zoom * automaticDetailScale;
       let drawX = areaX + (areaWidth - drawWidth) / 2 + draft.offset_x * areaWidth;
+      const handleAware = (platform === "vip" && ["2.jpg", "3.jpg"].includes(slot.file_name))
+        || (platform === "jd" && ["2.jpg", "3.jpg"].includes(slot.file_name));
+      const handleLift = handleAware && productLayer && !hasManualCrop
+        ? liveHandleVisualLift(productLayer)
+        : 0;
       let drawY = areaY + (areaHeight - drawHeight) / 2 + draft.offset_y * areaHeight
         + (usesAutomaticDetailCutout
           ? (platform === "jd"
-            ? (slot.file_name === "4.jpg" ? -0.025 : -0.055)
-            : ["604.jpg", "605.jpg"].includes(slot.file_name) ? -0.11 : -0.08) * areaHeight
-          : 0);
+            ? -0.055
+            : ["604.jpg", "605.jpg"].includes(slot.file_name) ? -0.11 : slot.file_name === "4.jpg" ? -0.10 : -0.08) * areaHeight
+          : 0)
+        - handleLift * areaHeight * (usesAutomaticDetailCutout ? 0.04 : 0.065);
       const editorArea = slotEditorSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
       const safeLeft = editorArea.x * output.width;
       const safeTop = editorArea.y * output.height;
