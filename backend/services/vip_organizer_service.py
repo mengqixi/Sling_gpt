@@ -39,7 +39,7 @@ JD_LOGO_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "
 JD_PHONE_REFERENCE_PATH = Path(__file__).resolve().parents[1] / "assets" / "iphone_reference.png"
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
-PREVIEW_RENDER_VERSION = 8
+PREVIEW_RENDER_VERSION = 9
 MAX_PREVIEW_CACHE_ENTRIES = 96
 JD_PHONE_HEIGHT_MM = 163.0
 JD_PHONE_LABEL = "iPhone 17 Pro Max"
@@ -1213,6 +1213,9 @@ def analyze_assets(
             return int(item["role_confidence"])
         return 45
 
+    def view_ratio(item: dict[str, Any]) -> float:
+        return float(item.get("main_component_ratio", item.get("object_ratio", 1.0)))
+
     transparent = assigned("transparent") or max(usable_products, key=lambda item: item["alpha_ratio"])
     has_transparent = effective_role(transparent) == "transparent" or transparent["alpha_ratio"] > 0.02
     non_transparent = [item for item in usable_products if item["id"] != transparent["id"]] if has_transparent else usable_products[:]
@@ -1230,7 +1233,7 @@ def analyze_assets(
             key=lambda item: (abs(item["foreground_ratio"] - 0.14), abs(item["bbox_ratio"] - 0.22)),
         )[: max(1, min(6, len(non_transparent)))]
 
-    regular_views = [item for item in full_views if 0.9 <= item["object_ratio"] <= 1.8]
+    regular_views = [item for item in full_views if 0.9 <= view_ratio(item) <= 1.8]
     fixed_front_views = [item for item in usable_products if role_overrides.get(item["id"]) == "front"]
     labeled_front_views = fixed_front_views or [item for item in regular_views if effective_role(item) == "front"]
     front_view = max(
@@ -1238,7 +1241,7 @@ def analyze_assets(
         key=lambda item: (
             item["role_confidence"],
             item["foreground_fill_ratio"],
-            -abs(item["object_ratio"] - 1.30),
+            -abs(view_ratio(item) - 1.30),
             item["center_gold_ratio"],
             item["sharpness"],
         ),
@@ -1249,19 +1252,19 @@ def analyze_assets(
         key=lambda item: (item["center_gold_ratio"], -item["sharpness"]),
     ) if back_candidates else front_view)
     front_id = transparent["id"] if has_transparent else front_view["id"]
-    side_candidates = [item for item in full_views if item["object_ratio"] < 0.75 and item["foreground_ratio"] >= 0.04]
-    side_candidates.sort(key=lambda item: (abs(item["object_ratio"] - 0.45), -item["sharpness"]))
-    side_view = assigned("side") or (side_candidates[0] if side_candidates else min(full_views, key=lambda item: item["object_ratio"]))
+    side_candidates = [item for item in full_views if view_ratio(item) < 0.75 and item["foreground_ratio"] >= 0.04]
+    side_candidates.sort(key=lambda item: (abs(view_ratio(item) - 0.45), -item["sharpness"]))
+    side_view = assigned("side") or (side_candidates[0] if side_candidates else min(full_views, key=view_ratio))
     side_id = side_view["id"]
     semi_side_candidates = [
         item
         for item in full_views
         if item["id"] not in {front_view["id"], back_view["id"]}
-        and 1.02 <= item["object_ratio"] <= 1.26
+        and 1.02 <= view_ratio(item) <= 1.26
         and item["foreground_fill_ratio"] >= 0.52
     ]
     semi_side_candidates.sort(key=lambda item: (
-        abs(item["object_ratio"] - 1.16),
+        abs(view_ratio(item) - 1.16),
         -item["foreground_fill_ratio"],
         -item["sharpness"],
     ))
@@ -1270,7 +1273,7 @@ def analyze_assets(
     top_candidates = [
         item for item in full_views
         if item["id"] not in {front_view["id"], back_view["id"], side_id, angle_view["id"]}
-        and 0.72 <= item["object_ratio"] <= 0.95
+        and 0.72 <= view_ratio(item) <= 0.95
     ]
     top_view = assigned("top") or (min(top_candidates, key=lambda item: item["sharpness"]) if top_candidates else next(
         (item for item in full_views if item["id"] not in {front_view["id"], back_view["id"], side_id, angle_view["id"]}),
@@ -1634,6 +1637,55 @@ def _expanded_safe_box(
     )
 
 
+def _has_light_studio_border(source: Image.Image) -> bool:
+    preview = source.convert("RGB")
+    preview.thumbnail((96, 96), Image.Resampling.BILINEAR)
+    pixels = np.asarray(preview, dtype=np.uint8)
+    border_size = max(2, min(pixels.shape[:2]) // 18)
+    border = np.concatenate((
+        pixels[:border_size].reshape(-1, 3),
+        pixels[-border_size:].reshape(-1, 3),
+        pixels[:, :border_size].reshape(-1, 3),
+        pixels[:, -border_size:].reshape(-1, 3),
+    ))
+    bright = border.min(axis=1) >= 232
+    neutral = border.max(axis=1) - border.min(axis=1) <= 22
+    return float(np.mean(bright & neutral)) >= 0.78
+
+
+def _paste_detail_layer(
+    canvas: Image.Image,
+    source: Image.Image,
+    box: tuple[int, int, int, int],
+    adjustment: dict[str, Any] | None,
+    *,
+    clip_box: tuple[int, int, int, int] | None = None,
+    auto_zoom: float = 0.9,
+    auto_offset_y: float = -0.045,
+    default_mode: str = "cover",
+) -> None:
+    cropped = _crop_source(source, adjustment)
+    if not _has_manual_layout_adjustment(adjustment) and _has_light_studio_border(cropped):
+        cutout = _product_cutout(cropped)
+        _paste_layer(
+            canvas,
+            cutout,
+            box,
+            {"zoom": auto_zoom, "offset_y": auto_offset_y},
+            mode="contain",
+            clip_box=clip_box,
+        )
+        return
+    _paste_layer(
+        canvas,
+        cropped.convert("RGB"),
+        box,
+        adjustment,
+        mode=_crop_aware_mode(adjustment, default_mode),
+        clip_box=clip_box,
+    )
+
+
 def _paste_product(
     canvas: Image.Image,
     source: Image.Image,
@@ -1816,10 +1868,22 @@ def _detail_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None
     title_font = _font(34, True)
     title_box = draw.textbbox((0, 0), title, font=title_font)
     draw.text(((750 - (title_box[2] - title_box[0])) / 2, 70), title, font=title_font, fill="#c4c4c4")
-    cropped = _crop_source(source.convert("RGB"), adjustment)
     box = (52, 181, 695, 704)
-    clip_box = _expanded_safe_box(box, canvas.size) if _has_manual_layout_adjustment(adjustment) else None
-    _paste_layer(canvas, cropped, box, adjustment, mode=_crop_aware_mode(adjustment, "cover"), clip_box=clip_box)
+    if _has_manual_layout_adjustment(adjustment):
+        clip_box = _expanded_safe_box(box, canvas.size)
+    elif _has_light_studio_border(source):
+        clip_box = _expanded_safe_box(box, canvas.size)
+    else:
+        clip_box = None
+    _paste_detail_layer(
+        canvas,
+        source,
+        box,
+        adjustment,
+        clip_box=clip_box,
+        auto_zoom=0.82,
+        auto_offset_y=-0.11,
+    )
     return canvas
 
 
@@ -1932,13 +1996,16 @@ def _jd_product_page(
 ) -> Image.Image:
     canvas = Image.new("RGB", size, "white")
     if detail:
-        _paste_layer(
-            canvas,
-            _crop_source(source.convert("RGB"), adjustment),
-            (0, 0, *size),
-            adjustment,
-            mode=_crop_aware_mode(adjustment, "cover"),
-        )
+        if not _has_manual_layout_adjustment(adjustment) and _has_light_studio_border(source):
+            detail_box = (
+                round(size[0] * 0.0875),
+                round(size[1] * 0.145),
+                round(size[0] * 0.9125),
+                round(size[1] * 0.92),
+            )
+            _paste_detail_layer(canvas, source, detail_box, adjustment, auto_zoom=0.9, auto_offset_y=-0.055)
+        else:
+            _paste_detail_layer(canvas, source, (0, 0, *size), adjustment)
     else:
         if size == (800, 800):
             box = (100, 135, 700, 700)
@@ -2248,7 +2315,9 @@ def _jd_size_comparison_page(
         round(phone_height * reference.width / reference.height) if reference is not None else round(phone_height * 0.83),
     )
     phone_left = round(phone_center_x - phone_width / 2)
-    phone_left = min(max(safe_left, phone_left), max(safe_left, safe_right - phone_width))
+    phone_ruler_gap = max(38, round(width * 0.075))
+    phone_right_allowance = phone_ruler_gap + max(18, round(width * 0.025)) if normalized["phone_show_ruler"] else 0
+    phone_left = min(max(safe_left, phone_left), max(safe_left, safe_right - phone_width - phone_right_allowance))
     phone_center_x = phone_left + phone_width / 2
     phone_bottom_allowance = 0 if not normalized["phone_show_ruler"] else max(28, round(height * 0.055))
     phone_top = min(max(safe_top, phone_top), max(safe_top, safe_bottom - phone_height - phone_bottom_allowance))
@@ -2278,7 +2347,7 @@ def _jd_size_comparison_page(
         )
 
     if normalized["phone_show_ruler"]:
-        phone_ruler_x = min(width - round(width * 0.10), phone_box[2] + max(28, round(width * 0.055)))
+        phone_ruler_x = min(safe_right - max(12, round(width * 0.02)), phone_box[2] + phone_ruler_gap)
         _draw_jd_dimension_bar(
             canvas,
             (phone_ruler_x, phone_box[1]),
@@ -2409,7 +2478,15 @@ def _render_slot_image(
         return canvas
     if file_name in {"4.jpg", "15.jpg"}:
         canvas = Image.new("RGB", (800, 800), "white")
-        _paste_layer(canvas, _crop_source(source.convert("RGB"), adjustment), (0, 0, 800, 800), adjustment)
+        _paste_detail_layer(
+            canvas,
+            source,
+            (0, 0, 800, 800),
+            adjustment,
+            auto_zoom=0.82,
+            auto_offset_y=-0.08,
+            default_mode="contain",
+        )
         return canvas
     if file_name in {"601.jpg", "602.jpg", "603.jpg"}:
         return _model_showcase_page(source, adjustment)

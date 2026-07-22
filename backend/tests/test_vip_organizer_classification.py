@@ -1,7 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from PIL import Image, ImageChops
+import numpy as np
+from PIL import Image, ImageChops, ImageDraw
 
 from backend.services.vip_organizer_service import (
     BUNDLED_FONT_PATH,
@@ -109,6 +110,20 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         self.assertEqual(rendered.getpixel((52, 181)), (181, 34, 38))
         self.assertEqual(rendered.getpixel((694, 703)), (181, 34, 38))
         self.assertEqual(rendered.getpixel((695, 400)), (255, 255, 255))
+
+    def test_white_studio_detail_with_chain_is_reframed_above_the_bottom_edge(self):
+        source = Image.new("RGB", (400, 600), "white")
+        draw = ImageDraw.Draw(source)
+        draw.line((155, 260, 190, 90, 225, 260), fill="#171717", width=12)
+        draw.rectangle((110, 255, 290, 520), fill="#171717")
+
+        rendered = _detail_showcase_page(source)
+        pixels = np.asarray(rendered)
+        ys, xs = np.where(pixels.mean(axis=2) < 80)
+
+        self.assertGreater(len(xs), 0)
+        self.assertLess(int(ys.max()), 690)
+        self.assertLess(float(ys.mean()), 455)
 
     def test_template_product_box_allows_upscaling(self):
         canvas = Image.new("RGB", (750, 665), "white")
@@ -494,7 +509,7 @@ class VipOrganizerClassificationTests(unittest.TestCase):
     def test_slot_selection_keeps_semi_side_separate_from_front(self):
         samples = [
             {"id": 1, **metrics(object_ratio=1.19, foreground_ratio=0.16, foreground_fill_ratio=0.75, bbox_ratio=0.215)},
-            {"id": 2, **metrics(object_ratio=1.31, foreground_ratio=0.16, foreground_fill_ratio=0.72, bbox_ratio=0.229)},
+            {"id": 2, **metrics(object_ratio=0.62, main_component_ratio=1.31, foreground_ratio=0.16, foreground_fill_ratio=0.72, bbox_ratio=0.229)},
             {"id": 3, **metrics(object_ratio=1.26, foreground_ratio=0.15, foreground_fill_ratio=0.73, bbox_ratio=0.212, center_gold_ratio=0.006)},
             {"id": 4, **metrics(object_ratio=0.80, foreground_ratio=0.10, foreground_fill_ratio=0.51, bbox_ratio=0.193, center_gold_ratio=0.14)},
             {"id": 5, **metrics(alpha_ratio=0.4, object_ratio=1.31, bbox_ratio=0.67)},

@@ -42,6 +42,8 @@ type ImageAdjustment = {
   phone_show_ruler?: boolean;
 };
 
+type CropSelection = { left: number; top: number; width: number; height: number };
+
 type ApiRoleNote = {
   role: string;
   confidence: number;
@@ -226,6 +228,63 @@ function slotEditorSafeAreaLayout(slot: Slot, platform: OrganizerPlatform, sourc
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
+function cropSelectionForTemplate(
+  start: { x: number; y: number },
+  point: { x: number; y: number },
+  imageRect: CropSelection,
+  aspectRatio: number
+): CropSelection {
+  const directionX = point.x < start.x ? -1 : 1;
+  const directionY = point.y < start.y ? -1 : 1;
+  const rawWidth = Math.max(1, Math.abs(point.x - start.x));
+  const rawHeight = Math.max(1, Math.abs(point.y - start.y));
+  const ratio = Math.max(0.05, aspectRatio);
+  let width: number;
+  let height: number;
+  if (rawWidth / rawHeight >= ratio) {
+    width = rawWidth;
+    height = width / ratio;
+  } else {
+    height = rawHeight;
+    width = height * ratio;
+  }
+  const maxWidth = directionX > 0
+    ? imageRect.left + imageRect.width - start.x
+    : start.x - imageRect.left;
+  const maxHeight = directionY > 0
+    ? imageRect.top + imageRect.height - start.y
+    : start.y - imageRect.top;
+  const clampScale = Math.min(1, maxWidth / width, maxHeight / height);
+  width = Math.max(1, width * clampScale);
+  height = Math.max(1, height * clampScale);
+  return {
+    left: directionX > 0 ? start.x : start.x - width,
+    top: directionY > 0 ? start.y : start.y - height,
+    width,
+    height
+  };
+}
+
+function fitCropSelectionToTemplate(
+  selection: CropSelection,
+  imageRect: CropSelection,
+  aspectRatio: number
+): CropSelection {
+  const ratio = Math.max(0.05, aspectRatio);
+  const centerX = selection.left + selection.width / 2;
+  const centerY = selection.top + selection.height / 2;
+  let width = selection.width;
+  let height = selection.height;
+  if (width / Math.max(1, height) > ratio) height = width / ratio;
+  else width = height * ratio;
+  const shrink = Math.min(1, imageRect.width / width, imageRect.height / height);
+  width *= shrink;
+  height *= shrink;
+  const left = Math.max(imageRect.left, Math.min(centerX - width / 2, imageRect.left + imageRect.width - width));
+  const top = Math.max(imageRect.top, Math.min(centerY - height / 2, imageRect.top + imageRect.height - height));
+  return { left, top, width, height };
+}
+
 function SlotSafeAreaOverlay({ slot, platform, sourceIndex, targetFolder }: {
   slot: Slot;
   platform: OrganizerPlatform;
@@ -260,6 +319,8 @@ function SlotSafeAreaOverlay({ slot, platform, sourceIndex, targetFolder }: {
 
 const livePreviewImageCache = new Map<string, HTMLImageElement>();
 const livePreviewBoundsCache = new Map<string, { left: number; top: number; right: number; bottom: number }>();
+const livePreviewCutoutCache = new Map<string, HTMLCanvasElement>();
+const livePreviewLightBorderCache = new Map<string, boolean>();
 
 function livePreviewImage(url: string) {
   const cached = livePreviewImageCache.get(url);
@@ -269,6 +330,113 @@ function livePreviewImage(url: string) {
   image.src = url;
   livePreviewImageCache.set(url, image);
   return image;
+}
+
+function livePreviewProductCutout(url: string, image: HTMLImageElement) {
+  const cached = livePreviewCutoutCache.get(url);
+  if (cached) return cached;
+  const scale = Math.min(1, 1100 / Math.max(image.naturalWidth, image.naturalHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return canvas;
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  const pixels = imageData.data;
+  const cornerSize = Math.max(2, Math.round(Math.min(canvas.width, canvas.height) * 0.012));
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+  let samples = 0;
+  for (const origin of [[0, 0], [canvas.width - cornerSize, 0], [0, canvas.height - cornerSize], [canvas.width - cornerSize, canvas.height - cornerSize]]) {
+    for (let y = origin[1]; y < origin[1] + cornerSize; y += 1) {
+      for (let x = origin[0]; x < origin[0] + cornerSize; x += 1) {
+        const offset = (y * canvas.width + x) * 4;
+        if (pixels[offset + 3] < 16) continue;
+        red += pixels[offset];
+        green += pixels[offset + 1];
+        blue += pixels[offset + 2];
+        samples += 1;
+      }
+    }
+  }
+  const background = samples > 0
+    ? [red / samples, green / samples, blue / samples]
+    : [255, 255, 255];
+  const visited = new Uint8Array(canvas.width * canvas.height);
+  const queue = new Int32Array(canvas.width * canvas.height);
+  let queueStart = 0;
+  let queueEnd = 0;
+  const isBackground = (pixelIndex: number) => {
+    const offset = pixelIndex * 4;
+    if (pixels[offset + 3] < 24) return true;
+    const distance = Math.max(
+      Math.abs(pixels[offset] - background[0]),
+      Math.abs(pixels[offset + 1] - background[1]),
+      Math.abs(pixels[offset + 2] - background[2])
+    );
+    const neutralWhite = background[0] > 235 && background[1] > 235 && background[2] > 235
+      && pixels[offset] > 238 && pixels[offset + 1] > 238 && pixels[offset + 2] > 238;
+    return distance <= 24 || neutralWhite;
+  };
+  const enqueue = (pixelIndex: number) => {
+    if (visited[pixelIndex] || !isBackground(pixelIndex)) return;
+    visited[pixelIndex] = 1;
+    queue[queueEnd++] = pixelIndex;
+  };
+  for (let x = 0; x < canvas.width; x += 1) {
+    enqueue(x);
+    enqueue((canvas.height - 1) * canvas.width + x);
+  }
+  for (let y = 1; y < canvas.height - 1; y += 1) {
+    enqueue(y * canvas.width);
+    enqueue(y * canvas.width + canvas.width - 1);
+  }
+  while (queueStart < queueEnd) {
+    const pixelIndex = queue[queueStart++];
+    const x = pixelIndex % canvas.width;
+    const y = Math.floor(pixelIndex / canvas.width);
+    if (x > 0) enqueue(pixelIndex - 1);
+    if (x + 1 < canvas.width) enqueue(pixelIndex + 1);
+    if (y > 0) enqueue(pixelIndex - canvas.width);
+    if (y + 1 < canvas.height) enqueue(pixelIndex + canvas.width);
+  }
+  for (let pixelIndex = 0; pixelIndex < visited.length; pixelIndex += 1) {
+    if (visited[pixelIndex]) pixels[pixelIndex * 4 + 3] = 0;
+  }
+  context.putImageData(imageData, 0, 0);
+  livePreviewCutoutCache.set(url, canvas);
+  return canvas;
+}
+
+function livePreviewHasLightStudioBorder(url: string, image: HTMLImageElement) {
+  const cached = livePreviewLightBorderCache.get(url);
+  if (cached !== undefined) return cached;
+  const canvas = document.createElement("canvas");
+  const scale = Math.min(1, 96 / Math.max(image.naturalWidth, image.naturalHeight));
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return false;
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  const borderSize = Math.max(2, Math.floor(Math.min(canvas.width, canvas.height) / 18));
+  let matching = 0;
+  let total = 0;
+  for (let y = 0; y < canvas.height; y += 1) {
+    for (let x = 0; x < canvas.width; x += 1) {
+      if (x >= borderSize && x < canvas.width - borderSize && y >= borderSize && y < canvas.height - borderSize) continue;
+      const offset = (y * canvas.width + x) * 4;
+      const minimum = Math.min(pixels[offset], pixels[offset + 1], pixels[offset + 2]);
+      const maximum = Math.max(pixels[offset], pixels[offset + 1], pixels[offset + 2]);
+      if (minimum >= 232 && maximum - minimum <= 22) matching += 1;
+      total += 1;
+    }
+  }
+  const result = total > 0 && matching / total >= 0.78;
+  livePreviewLightBorderCache.set(url, result);
+  return result;
 }
 
 function livePreviewContentBounds(url: string, image: HTMLImageElement) {
@@ -338,18 +506,32 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       context.fillRect(0, 0, output.width, output.height);
       if (template) context.drawImage(template, 0, 0, output.width, output.height);
 
-      const area = slotPreviewLayout(slot, platform, sourceIndex, targetFolder);
+      let area = slotPreviewLayout(slot, platform, sourceIndex, targetFolder);
       const areaX = area.x * output.width;
       const areaY = area.y * output.height;
       const areaWidth = area.width * output.width;
       const areaHeight = area.height * output.height;
-      const usesProductCutout = platform === "jd"
-        ? ["2.jpg", "5.jpg", "透明.png"].includes(slot.file_name)
-        : ["2.jpg", "3.jpg", "30.png", "401.jpg", "606.jpg", "801.jpg"].includes(slot.file_name);
       const hasManualCrop = draft.crop_x > 0.0001
         || draft.crop_y > 0.0001
         || draft.crop_width < 0.9999
         || draft.crop_height < 0.9999;
+      const hasManualLayout = hasManualCrop
+        || Math.abs(draft.zoom - 1) > 0.0001
+        || Math.abs(draft.offset_x) > 0.0001
+        || Math.abs(draft.offset_y) > 0.0001;
+      const automaticDetailCandidate = platform === "jd"
+        ? ["3.jpg", "4.jpg"].includes(slot.file_name)
+        : ["4.jpg", "15.jpg", "604.jpg", "605.jpg"].includes(slot.file_name);
+      const usesAutomaticDetailCutout = automaticDetailCandidate
+        && !hasManualLayout
+        && livePreviewHasLightStudioBorder(sourceUrl, image);
+      if (usesAutomaticDetailCutout && platform === "jd") {
+        area = { x: 0.0875, y: 0.145, width: 0.825, height: 0.775, mode: "contain" };
+      }
+      const usesProductCutout = (platform === "jd"
+        ? ["2.jpg", "5.jpg", "透明.png"].includes(slot.file_name)
+        : ["2.jpg", "3.jpg", "30.png", "401.jpg", "606.jpg", "801.jpg"].includes(slot.file_name))
+        || usesAutomaticDetailCutout;
       // A manual crop is expressed in full-image coordinates. Automatic content
       // bounds are only useful before the designer chooses an explicit region.
       const useContentBounds = usesProductCutout && !hasManualCrop;
@@ -365,13 +547,21 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       const sourceY = Math.max(0, Math.min(image.naturalHeight - 1, bounds.top + draft.crop_y * contentHeight));
       const sourceWidth = Math.max(1, Math.min(image.naturalWidth - sourceX, draft.crop_width * contentWidth));
       const sourceHeight = Math.max(1, Math.min(image.naturalHeight - sourceY, draft.crop_height * contentHeight));
-      const fitScale = area.mode === "cover" && !hasManualCrop
+      const productLayer = usesProductCutout ? livePreviewProductCutout(sourceUrl, image) : null;
+      const drawSource = productLayer || image;
+      const drawSourceScaleX = productLayer ? productLayer.width / image.naturalWidth : 1;
+      const drawSourceScaleY = productLayer ? productLayer.height / image.naturalHeight : 1;
+      const fitScale = area.mode === "cover" && !hasManualCrop && !usesAutomaticDetailCutout
         ? Math.max(areaWidth / sourceWidth, areaHeight / sourceHeight)
         : Math.min(areaWidth / sourceWidth, areaHeight / sourceHeight);
-      const drawWidth = sourceWidth * fitScale * draft.zoom;
-      const drawHeight = sourceHeight * fitScale * draft.zoom;
+      const automaticDetailScale = usesAutomaticDetailCutout ? (platform === "jd" ? 0.9 : 0.82) : 1;
+      const drawWidth = sourceWidth * fitScale * draft.zoom * automaticDetailScale;
+      const drawHeight = sourceHeight * fitScale * draft.zoom * automaticDetailScale;
       let drawX = areaX + (areaWidth - drawWidth) / 2 + draft.offset_x * areaWidth;
-      let drawY = areaY + (areaHeight - drawHeight) / 2 + draft.offset_y * areaHeight;
+      let drawY = areaY + (areaHeight - drawHeight) / 2 + draft.offset_y * areaHeight
+        + (usesAutomaticDetailCutout
+          ? (platform === "jd" ? -0.055 : ["604.jpg", "605.jpg"].includes(slot.file_name) ? -0.11 : -0.08) * areaHeight
+          : 0);
       const editorArea = slotEditorSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
       const safeLeft = editorArea.x * output.width;
       const safeTop = editorArea.y * output.height;
@@ -387,11 +577,11 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       context.rect(safeLeft, safeTop, safeRight - safeLeft, safeBottom - safeTop);
       context.clip();
       context.drawImage(
-        image,
-        sourceX,
-        sourceY,
-        sourceWidth,
-        sourceHeight,
+        drawSource,
+        sourceX * drawSourceScaleX,
+        sourceY * drawSourceScaleY,
+        sourceWidth * drawSourceScaleX,
+        sourceHeight * drawSourceScaleY,
         drawX,
         drawY,
         drawWidth,
@@ -502,8 +692,10 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         const phoneSafeTop = phoneSafeArea.y * output.height;
         const phoneSafeRight = (phoneSafeArea.x + phoneSafeArea.width) * output.width;
         const phoneSafeBottom = (phoneSafeArea.y + phoneSafeArea.height) * output.height;
+        const phoneRulerGap = Math.max(38, output.width * 0.075);
+        const phoneRightAllowance = draft.phone_show_ruler === false ? 0 : phoneRulerGap + Math.max(18, output.width * 0.025);
         const phoneBottomAllowance = draft.phone_show_ruler === false ? 0 : Math.max(28, output.height * 0.055);
-        phoneLeft = Math.max(phoneSafeLeft, Math.min(phoneLeft, phoneSafeRight - pairWidth));
+        phoneLeft = Math.max(phoneSafeLeft, Math.min(phoneLeft, phoneSafeRight - pairWidth - phoneRightAllowance));
         adjustedPhoneTop = Math.max(phoneSafeTop, Math.min(adjustedPhoneTop, phoneSafeBottom - phoneHeight - phoneBottomAllowance));
         context.save();
         if (phoneReference?.complete && phoneReference.naturalWidth) {
@@ -511,7 +703,7 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         }
         if (draft.phone_show_ruler !== false) {
           const phoneRight = phoneLeft + pairWidth;
-          const phoneRulerX = Math.min(output.width * 0.94, phoneRight + output.width * 0.055);
+          const phoneRulerX = Math.min(phoneSafeRight - Math.max(12, output.width * 0.02), phoneRight + phoneRulerGap);
           context.strokeStyle = "#777";
           context.fillStyle = "#666";
           context.lineWidth = Math.max(1, output.width * 0.002);
@@ -690,12 +882,12 @@ function SlotAdjustmentEditor({
   const [cropMode, setCropMode] = useState(false);
   const isPhoneComparison = platform === "jd" && slot.file_name === "5.jpg";
   const [moveTarget] = useState<"product" | "phone">(initialMoveTarget);
-  const [cropSelection, setCropSelection] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [cropSelection, setCropSelection] = useState<CropSelection | null>(null);
   const sourceStageRef = useRef<HTMLDivElement>(null);
   const resultStageRef = useRef<HTMLDivElement>(null);
   const sourceImageRef = useRef<HTMLImageElement>(null);
   const cropStartRef = useRef<{ x: number; y: number } | null>(null);
-  const cropSelectionRef = useRef<{ left: number; top: number; width: number; height: number } | null>(null);
+  const cropSelectionRef = useRef<CropSelection | null>(null);
   const moveStartRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number; target: "product" | "phone" } | null>(null);
   const pendingMoveRef = useRef<ImageAdjustment | null>(null);
   const moveFrameRef = useRef<number | null>(null);
@@ -826,12 +1018,17 @@ function SlotAdjustmentEditor({
     const stage = sourceStageRef.current;
     const image = sourceImageRef.current;
     if (!stage || !image?.naturalWidth || !image.naturalHeight) return null;
-    const stageWidth = stage.clientWidth;
-    const stageHeight = stage.clientHeight;
-    const scale = Math.min(stageWidth / image.naturalWidth, stageHeight / image.naturalHeight);
+    const stageBounds = stage.getBoundingClientRect();
+    const imageBounds = image.getBoundingClientRect();
+    const scale = Math.min(imageBounds.width / image.naturalWidth, imageBounds.height / image.naturalHeight);
     const width = image.naturalWidth * scale;
     const height = image.naturalHeight * scale;
-    return { left: (stageWidth - width) / 2, top: (stageHeight - height) / 2, width, height };
+    return {
+      left: imageBounds.left - stageBounds.left + (imageBounds.width - width) / 2,
+      top: imageBounds.top - stageBounds.top + (imageBounds.height - height) / 2,
+      width,
+      height
+    };
   }
 
   function sourcePoint(clientX: number, clientY: number) {
@@ -842,6 +1039,21 @@ function SlotAdjustmentEditor({
     const x = Math.max(imageRect.left, Math.min(imageRect.left + imageRect.width, clientX - bounds.left));
     const y = Math.max(imageRect.top, Math.min(imageRect.top + imageRect.height, clientY - bounds.top));
     return { x, y, imageRect };
+  }
+
+  function updateCropSelection(clientX: number, clientY: number) {
+    const start = cropStartRef.current;
+    const point = sourcePoint(clientX, clientY);
+    if (!start || !point) return;
+    const nextSelection = cropSelectionForTemplate(start, point, point.imageRect, cropAspectRatio());
+    cropSelectionRef.current = nextSelection;
+    setCropSelection(nextSelection);
+  }
+
+  function cropAspectRatio() {
+    const output = slotCanvasSize(slot.size, platform, targetFolder);
+    const area = slotPreviewLayout(slot, platform, sourceIndex, targetFolder);
+    return (area.width * output.width) / Math.max(1, area.height * output.height);
   }
 
   function finishCrop() {
@@ -880,14 +1092,25 @@ function SlotAdjustmentEditor({
     window.requestAnimationFrame(() => {
       const imageRect = displayedImageRect();
       if (!imageRect) return;
-      const selection = {
+      const previousSelection = {
         left: imageRect.left + current.crop_x * imageRect.width,
         top: imageRect.top + current.crop_y * imageRect.height,
         width: current.crop_width * imageRect.width,
         height: current.crop_height * imageRect.height
       };
+      const selection = fitCropSelectionToTemplate(previousSelection, imageRect, cropAspectRatio());
       cropSelectionRef.current = selection;
       setCropSelection(selection);
+      applyDraft({
+        ...draftRef.current,
+        crop_x: (selection.left - imageRect.left) / imageRect.width,
+        crop_y: (selection.top - imageRect.top) / imageRect.height,
+        crop_width: selection.width / imageRect.width,
+        crop_height: selection.height / imageRect.height,
+        zoom: 1,
+        offset_x: 0,
+        offset_y: 0
+      });
     });
   }
 
@@ -998,19 +1221,12 @@ function SlotAdjustmentEditor({
               }}
               onPointerMove={(event) => {
                 if (!cropMode || !cropStartRef.current) return;
-                const point = sourcePoint(event.clientX, event.clientY);
-                if (!point) return;
-                const start = cropStartRef.current;
-                const nextSelection = {
-                  left: Math.min(start.x, point.x),
-                  top: Math.min(start.y, point.y),
-                  width: Math.abs(point.x - start.x),
-                  height: Math.abs(point.y - start.y)
-                };
-                cropSelectionRef.current = nextSelection;
-                setCropSelection(nextSelection);
+                updateCropSelection(event.clientX, event.clientY);
               }}
-              onPointerUp={finishCrop}
+              onPointerUp={(event) => {
+                updateCropSelection(event.clientX, event.clientY);
+                finishCrop();
+              }}
               onPointerCancel={finishCrop}
             >
               <img ref={sourceImageRef} src={displaySourceUrl || sourceUrl} alt={isPhoneComparison && moveTarget === "phone" ? "手机参照图" : "原始素材"} draggable={false} />
