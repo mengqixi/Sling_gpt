@@ -39,7 +39,7 @@ JD_LOGO_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "
 JD_PHONE_REFERENCE_PATH = Path(__file__).resolve().parents[1] / "assets" / "iphone_reference.png"
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
-PREVIEW_RENDER_VERSION = 5
+PREVIEW_RENDER_VERSION = 6
 MAX_PREVIEW_CACHE_ENTRIES = 96
 
 
@@ -1527,6 +1527,16 @@ def _crop_aware_mode(adjustment: dict[str, Any] | None, default: str) -> str:
     return "contain" if _has_manual_crop(adjustment) else default
 
 
+def _has_manual_layout_adjustment(adjustment: dict[str, Any] | None) -> bool:
+    normalized = _normalize_adjustment(adjustment)
+    return (
+        _has_manual_crop(adjustment)
+        or abs(normalized["zoom"] - 1.0) > 0.0001
+        or abs(normalized["offset_x"]) > 0.0001
+        or abs(normalized["offset_y"]) > 0.0001
+    )
+
+
 def _crop_cache_key(adjustment: dict[str, Any] | None) -> tuple[int, int, int, int]:
     normalized = _normalize_adjustment(adjustment)
     return tuple(
@@ -1611,6 +1621,37 @@ def _paste_product(
     _paste_layer(canvas, cutout, box, adjustment)
 
 
+def _paste_product_floating(
+    canvas: Image.Image,
+    source: Image.Image,
+    box: tuple[int, int, int, int],
+    adjustment: dict[str, Any] | None = None,
+) -> None:
+    """Use the template box for scale/position without clipping manual movement to it."""
+    left, top, right, bottom = box
+    box_width = max(1, right - left)
+    box_height = max(1, bottom - top)
+    normalized = _normalize_adjustment(adjustment)
+    cutout = _product_cutout(_crop_source(source, adjustment))
+    scale = min(box_width / cutout.width, box_height / cutout.height) * normalized["zoom"]
+    rendered = cutout.resize(
+        (max(1, round(cutout.width * scale)), max(1, round(cutout.height * scale))),
+        Image.Resampling.LANCZOS,
+    )
+    x = left + (box_width - rendered.width) // 2 + round(normalized["offset_x"] * box_width)
+    y = top + (box_height - rendered.height) // 2 + round(normalized["offset_y"] * box_height)
+    safe_left = round(canvas.width * 0.04)
+    safe_top = round(canvas.height * 0.04)
+    safe_right = round(canvas.width * 0.96)
+    safe_bottom = round(canvas.height * 0.96)
+    x = max(safe_left, min(x, safe_right - rendered.width))
+    y = max(safe_top, min(y, safe_bottom - rendered.height))
+    if canvas.mode == "RGBA":
+        canvas.alpha_composite(rendered, (x, y))
+    else:
+        canvas.paste(rendered.convert("RGB"), (x, y), rendered.getchannel("A"))
+
+
 def _normalized_product_page(
     source: Image.Image,
     size: tuple[int, int] = (800, 800),
@@ -1690,7 +1731,10 @@ def _info_page(
         y += 96
 
     if product_image is not None:
-        _paste_product(image, product_image, INFO_PRODUCT_BOX, adjustment)
+        if _has_manual_layout_adjustment(adjustment):
+            _paste_product_floating(image, product_image, INFO_PRODUCT_BOX, adjustment)
+        else:
+            _paste_product(image, product_image, INFO_PRODUCT_BOX, adjustment)
 
     line_color = "#8a8a8a"
     draw.line((390, 486, 590, 486), fill=line_color, width=2)
@@ -2130,8 +2174,13 @@ def _jd_size_comparison_page(
     desired_body_bottom += normalized["offset_y"] * height * 0.18
     paste_x = round(desired_body_center_x - (scaled_body[0] + scaled_body[2]) / 2)
     paste_y = round(desired_body_bottom - scaled_body[3])
-    paste_x = min(max(8, paste_x), max(8, width - resized_width - 8))
-    paste_y = min(max(round(height * 0.16), paste_y), max(round(height * 0.16), height - resized_height - 35))
+    safe_left = round(width * 0.04)
+    safe_top = round(height * 0.04)
+    safe_right = round(width * 0.96)
+    safe_bottom = round(height * 0.96)
+    paste_x = min(max(safe_left, paste_x), max(safe_left, safe_right - resized_width))
+    product_top = max(safe_top, round(height * 0.16))
+    paste_y = min(max(product_top, paste_y), max(product_top, safe_bottom - resized_height - 35))
     canvas.paste(cutout, (paste_x, paste_y), cutout)
 
     rendered_body = (
@@ -2152,6 +2201,16 @@ def _jd_size_comparison_page(
     else:
         phone_top = round((rendered_body[1] + rendered_body[3] - phone_height) / 2)
     phone_top += round(normalized["phone_offset_y"] * height * 0.18)
+    reference = _jd_phone_reference_layer()
+    phone_width = max(
+        42,
+        round(phone_height * reference.width / reference.height) if reference is not None else round(phone_height * 0.83),
+    )
+    phone_left = round(phone_center_x - phone_width / 2)
+    phone_left = min(max(safe_left, phone_left), max(safe_left, safe_right - phone_width))
+    phone_center_x = phone_left + phone_width / 2
+    phone_bottom_allowance = 0 if not normalized["phone_show_ruler"] else max(28, round(height * 0.055))
+    phone_top = min(max(safe_top, phone_top), max(safe_top, safe_bottom - phone_height - phone_bottom_allowance))
     phone_box = _draw_jd_phone_reference(
         canvas,
         round(phone_center_x),

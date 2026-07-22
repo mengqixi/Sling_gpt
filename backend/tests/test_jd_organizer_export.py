@@ -103,3 +103,16 @@ def test_jd_single_model_preview_does_not_create_vip_model_slot():
 def test_manual_crop_switches_cover_templates_to_contain():
     assert service._crop_aware_mode(None, "cover") == "cover"
     assert service._crop_aware_mode({"crop_y": 0.1, "crop_height": 0.8}, "cover") == "contain"
+
+
+def test_401_manual_product_layer_can_move_outside_original_box():
+    source = Image.new("RGBA", (20, 20), (210, 20, 20, 255))
+    clipped = Image.new("RGB", (100, 100), "white")
+    floating = Image.new("RGB", (100, 100), "white")
+    adjustment = {"offset_y": 1.0}
+
+    service._paste_product(clipped, source, (40, 40, 60, 60), adjustment)
+    service._paste_product_floating(floating, source, (40, 40, 60, 60), adjustment)
+
+    assert clipped.getpixel((50, 70)) == (255, 255, 255)
+    assert floating.getpixel((50, 70))[0] > floating.getpixel((50, 70))[1]

@@ -208,10 +208,10 @@ function slotSafeAreaLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex
 }
 
 function slotEditorSafeAreaLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex: number, targetFolder: PreviewFolder) {
-  if (platform === "vip" && ["4.jpg", "30.png", "401.jpg", "604.jpg", "606.jpg"].includes(slot.file_name)) {
+  if (platform === "vip" && slot.file_name === "401.jpg") {
     return { x: 0.04, y: 0.04, width: 0.92, height: 0.92 };
   }
-  if (platform === "jd" && ["2.jpg", "5.jpg", "透明.png"].includes(slot.file_name)) {
+  if (platform === "jd" && slot.file_name === "5.jpg") {
     return { x: 0.04, y: 0.04, width: 0.92, height: 0.92 };
   }
   return slotSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
@@ -354,14 +354,35 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         : Math.min(areaWidth / sourceWidth, areaHeight / sourceHeight);
       const drawWidth = sourceWidth * fitScale * draft.zoom;
       const drawHeight = sourceHeight * fitScale * draft.zoom;
-      const drawX = areaX + (areaWidth - drawWidth) / 2 + draft.offset_x * areaWidth;
-      const drawY = areaY + (areaHeight - drawHeight) / 2 + draft.offset_y * areaHeight;
+      let drawX = areaX + (areaWidth - drawWidth) / 2 + draft.offset_x * areaWidth;
+      let drawY = areaY + (areaHeight - drawHeight) / 2 + draft.offset_y * areaHeight;
+      const usesExpandedSafeArea = (platform === "vip" && slot.file_name === "401.jpg")
+        || (platform === "jd" && slot.file_name === "5.jpg");
+      if (usesExpandedSafeArea) {
+        const safeArea = slotEditorSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
+        const safeLeft = safeArea.x * output.width;
+        const safeTop = safeArea.y * output.height;
+        const safeRight = (safeArea.x + safeArea.width) * output.width;
+        const safeBottom = (safeArea.y + safeArea.height) * output.height;
+        drawX = Math.max(safeLeft, Math.min(drawX, safeRight - drawWidth));
+        drawY = Math.max(safeTop, Math.min(drawY, safeBottom - drawHeight));
+      }
 
       context.fillStyle = "#fff";
       context.fillRect(areaX, areaY, areaWidth, areaHeight);
       context.save();
       context.beginPath();
-      context.rect(areaX, areaY, areaWidth, areaHeight);
+      if (usesExpandedSafeArea) {
+        const editorArea = slotEditorSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
+        context.rect(
+          editorArea.x * output.width,
+          editorArea.y * output.height,
+          editorArea.width * output.width,
+          editorArea.height * output.height
+        );
+      } else {
+        context.rect(areaX, areaY, areaWidth, areaHeight);
+      }
       context.clip();
       context.drawImage(
         image,
@@ -375,6 +396,54 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         drawHeight
       );
       context.restore();
+
+      if (platform === "vip" && slot.file_name === "401.jpg") {
+        const scaleX = output.width / 750;
+        const scaleY = output.height / 665;
+        const lineColor = "#777";
+        const lengthValue = Number.parseFloat(productInfo.product_length || "");
+        const widthValue = Number.parseFloat(productInfo.product_width || "");
+        const heightValue = Number.parseFloat(productInfo.product_height || "");
+        const dimensionLabel = (value: number) => Number.isFinite(value) ? `${Math.round(value * 10)}mm` : "--mm";
+        context.save();
+        context.strokeStyle = lineColor;
+        context.fillStyle = "#555";
+        context.lineWidth = 2 * Math.min(scaleX, scaleY);
+        context.font = `${Math.max(12, Math.round(18 * Math.min(scaleX, scaleY)))}px sans-serif`;
+        context.textAlign = "center";
+        context.beginPath();
+        context.moveTo(390 * scaleX, 486 * scaleY);
+        context.lineTo(590 * scaleX, 486 * scaleY);
+        context.moveTo(390 * scaleX, 477 * scaleY);
+        context.lineTo(390 * scaleX, 495 * scaleY);
+        context.moveTo(590 * scaleX, 477 * scaleY);
+        context.lineTo(590 * scaleX, 495 * scaleY);
+        context.moveTo(349 * scaleX, 285 * scaleY);
+        context.lineTo(349 * scaleX, 454 * scaleY);
+        context.moveTo(340 * scaleX, 285 * scaleY);
+        context.lineTo(358 * scaleX, 285 * scaleY);
+        context.moveTo(340 * scaleX, 454 * scaleY);
+        context.lineTo(358 * scaleX, 454 * scaleY);
+        context.moveTo(634 * scaleX, 486 * scaleY);
+        context.lineTo(690 * scaleX, 457 * scaleY);
+        context.moveTo(628 * scaleX, 478 * scaleY);
+        context.lineTo(639 * scaleX, 493 * scaleY);
+        context.moveTo(685 * scaleX, 450 * scaleY);
+        context.lineTo(696 * scaleX, 465 * scaleY);
+        context.stroke();
+        context.fillText(dimensionLabel(lengthValue), 490 * scaleX, 520 * scaleY);
+        context.save();
+        context.translate(315 * scaleX, 370 * scaleY);
+        context.rotate(-Math.PI / 2);
+        context.fillText(dimensionLabel(heightValue), 0, 0);
+        context.restore();
+        context.save();
+        context.translate(668 * scaleX, 520 * scaleY);
+        context.rotate(-26 * Math.PI / 180);
+        context.fillText(dimensionLabel(widthValue), 0, 0);
+        context.restore();
+        context.restore();
+      }
 
       if (platform === "jd" && slot.file_name === "5.jpg") {
         if (draft.product_show_ruler !== false) {
@@ -422,11 +491,19 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
           ? phoneHeight * phoneReference.naturalWidth / phoneReference.naturalHeight
           : phoneHeight * 0.78;
         const phoneCenterX = output.width * 0.75 + (draft.phone_offset_x || 0) * output.width * 0.18;
-        const phoneLeft = phoneCenterX - pairWidth / 2;
+        let phoneLeft = phoneCenterX - pairWidth / 2;
         const phoneTop = (draft.phone_alignment || "center") === "bottom"
           ? drawY + drawHeight - phoneHeight
           : drawY + (drawHeight - phoneHeight) / 2;
-        const adjustedPhoneTop = phoneTop + (draft.phone_offset_y || 0) * output.height * 0.18;
+        let adjustedPhoneTop = phoneTop + (draft.phone_offset_y || 0) * output.height * 0.18;
+        const phoneSafeArea = slotEditorSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
+        const phoneSafeLeft = phoneSafeArea.x * output.width;
+        const phoneSafeTop = phoneSafeArea.y * output.height;
+        const phoneSafeRight = (phoneSafeArea.x + phoneSafeArea.width) * output.width;
+        const phoneSafeBottom = (phoneSafeArea.y + phoneSafeArea.height) * output.height;
+        const phoneBottomAllowance = draft.phone_show_ruler === false ? 0 : Math.max(28, output.height * 0.055);
+        phoneLeft = Math.max(phoneSafeLeft, Math.min(phoneLeft, phoneSafeRight - pairWidth));
+        adjustedPhoneTop = Math.max(phoneSafeTop, Math.min(adjustedPhoneTop, phoneSafeBottom - phoneHeight - phoneBottomAllowance));
         context.save();
         if (phoneReference?.complete && phoneReference.naturalWidth) {
           context.drawImage(phoneReference, phoneLeft, adjustedPhoneTop, pairWidth, phoneHeight);
@@ -478,7 +555,19 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       if (template) template.removeEventListener("load", draw);
       if (phoneReference) phoneReference.removeEventListener("load", draw);
     };
-  }, [draft, platform, slot.file_name, slot.size, sourceIndex, sourceUrl, targetFolder, templateUrl]);
+  }, [
+    draft,
+    platform,
+    slot.file_name,
+    slot.size,
+    sourceIndex,
+    sourceUrl,
+    targetFolder,
+    templateUrl,
+    productInfo.product_length,
+    productInfo.product_width,
+    productInfo.product_height
+  ]);
 
   return <canvas ref={canvasRef} aria-label={`${slot.file_name} 前端即时预览`} />;
 }
@@ -1029,6 +1118,7 @@ export default function VipOrganizer() {
   const modelsRef = useRef<UploadItem[]>([]);
   const tagsRef = useRef<UploadItem[]>([]);
   const [slots, setSlots] = useState<Slot[]>([]);
+  const slotsRef = useRef<Slot[]>([]);
   const [platform, setPlatform] = useState<OrganizerPlatform>("vip");
   const [assets, setAssets] = useState<Record<string, any[]>>({ product: [], model: [], tag: [] });
   const [assetRoles, setAssetRoles] = useState<Record<number, string>>({});
@@ -1072,6 +1162,10 @@ export default function VipOrganizer() {
   });
 
   const allAssets = useMemo(() => [...(assets.product || []), ...(assets.model || []), ...(assets.tag || [])], [assets]);
+
+  useEffect(() => {
+    slotsRef.current = slots;
+  }, [slots]);
 
   function organizerProductInfo() {
     const dimensions = [info.product_length, info.product_width, info.product_height]
@@ -1341,6 +1435,7 @@ export default function VipOrganizer() {
     modelsRef.current = [];
     tagsRef.current = [];
     setSlots([]);
+    slotsRef.current = [];
     setAssets({ product: [], model: [], tag: [] });
     setAssetRoles({});
     setAssetTags({});
@@ -1462,14 +1557,39 @@ export default function VipOrganizer() {
         asset_tags: tagsOverride || assetTagsRef.current,
         platform: platformOverride
       });
-      setSlots((current) => {
-        if (replaceSlots) return result.slots as Slot[];
-        const merged = mergeAnalyzedSlots(current, result.slots as Slot[]);
-        if (incrementalKind !== "tag") return merged;
-        const mergedByName = new Map(merged.map((slot) => [slot.file_name, slot]));
-        return current.map((slot) => slot.kind === "tag" ? mergedByName.get(slot.file_name) || slot : slot);
-      });
-      if (platformOverride === "vip" && incrementalKind !== "tag") {
+      const currentSlots = slotsRef.current;
+      let nextSlots: Slot[];
+      if (replaceSlots) {
+        nextSlots = result.slots as Slot[];
+      } else {
+        const merged = mergeAnalyzedSlots(currentSlots, result.slots as Slot[]);
+        if (incrementalKind !== "tag") {
+          nextSlots = merged;
+        } else {
+          const mergedByName = new Map(merged.map((slot) => [slot.file_name, slot]));
+          nextSlots = currentSlots.map((slot) => slot.kind === "tag" ? mergedByName.get(slot.file_name) || slot : slot);
+        }
+      }
+      const previousByName = new Map(currentSlots.map((slot) => [slot.file_name, slotPreviewSignature(slot, organizerProductInfo(), platformOverride)]));
+      const changedNames = nextSlots
+        .filter((slot) => previousByName.get(slot.file_name) !== slotPreviewSignature(slot, organizerProductInfo(), platformOverride))
+        .map((slot) => slot.file_name);
+      if (changedNames.length) {
+        const changedKeys = changedNames.flatMap((fileName) => {
+          const slot = nextSlots.find((item) => item.file_name === fileName);
+          return slot ? previewFoldersForSlot(slot, platformOverride).map((folder) => slotPreviewKey(platformOverride, fileName, folder)) : [];
+        });
+        changedKeys.forEach((key) => delete slotPreviewSignaturesRef.current[key]);
+        const workspace = platformWorkspaceRef.current[platformOverride];
+        if (workspace) {
+          const signatures = { ...workspace.signatures };
+          changedKeys.forEach((key) => delete signatures[key]);
+          platformWorkspaceRef.current[platformOverride] = { ...workspace, slots: nextSlots, signatures };
+        }
+      }
+      slotsRef.current = nextSlots;
+      setSlots(nextSlots);
+      if (platformOverride === "vip" && incrementalKind !== "tag" && collections) {
         delete platformWorkspaceRef.current.jd;
         jdBackgroundPreparedRef.current = false;
       }
@@ -1530,7 +1650,21 @@ export default function VipOrganizer() {
         asset_tags: nextTags,
         platform
       });
-      setSlots((current) => mergeAnalyzedSlots(current, result.slots as Slot[]));
+      const nextSlots = mergeAnalyzedSlots(slotsRef.current, result.slots as Slot[]);
+      const changedNames = nextSlots
+        .filter((slot) => {
+          const current = slotsRef.current.find((item) => item.file_name === slot.file_name);
+          return !current || slotPreviewSignature(current, organizerProductInfo(), platform) !== slotPreviewSignature(slot, organizerProductInfo(), platform);
+        })
+        .map((slot) => slot.file_name);
+      changedNames.forEach((fileName) => {
+        const changedSlot = nextSlots.find((slot) => slot.file_name === fileName);
+        previewFoldersForSlot(changedSlot!, platform).forEach((folder) => {
+          delete slotPreviewSignaturesRef.current[slotPreviewKey(platform, fileName, folder)];
+        });
+      });
+      slotsRef.current = nextSlots;
+      setSlots(nextSlots);
       setAssets(result.assets);
       setAdjustmentEditor(null);
       setMessage("API 已完成一次素材分类，并按固定标签重新整理。请检查低可信度位置。");
@@ -1625,23 +1759,27 @@ export default function VipOrganizer() {
       delete slotPreviewSignaturesRef.current[slotPreviewKey(platform, affectedFileName, "750")];
     });
     if (adjustmentEditor && affectedNames.includes(adjustmentEditor.fileName)) setAdjustmentEditor(null);
-    setSlots((current) => current.map((slot) => {
-      const linkedModelSlot = linkedNames.includes(fileName);
-      const shouldUpdate = slot.file_name === fileName || (linkedModelSlot && linkedNames.includes(slot.file_name));
-      if (!shouldUpdate) return slot;
-      const next = [...slot.image_ids];
-      next[index] = value;
-      const adjustments = [...(slot.adjustments || [])];
-      while (adjustments.length <= index) adjustments.push({ ...DEFAULT_ADJUSTMENT });
-      adjustments[index] = { ...DEFAULT_ADJUSTMENT };
-      return {
-        ...slot,
-        image_ids: next.filter(Boolean),
-        adjustments,
-        confidence: 100,
-        reason: linkedModelSlot ? `${linkedNames.join("与")}已同步使用同一张模特图` : "已由设计师人工确认",
-      };
-    }));
+    setSlots((current) => {
+      const nextSlots = current.map((slot) => {
+        const linkedModelSlot = linkedNames.includes(fileName);
+        const shouldUpdate = slot.file_name === fileName || (linkedModelSlot && linkedNames.includes(slot.file_name));
+        if (!shouldUpdate) return slot;
+        const next = [...slot.image_ids];
+        next[index] = value;
+        const adjustments = [...(slot.adjustments || [])];
+        while (adjustments.length <= index) adjustments.push({ ...DEFAULT_ADJUSTMENT });
+        adjustments[index] = { ...DEFAULT_ADJUSTMENT };
+        return {
+          ...slot,
+          image_ids: next.filter(Boolean),
+          adjustments,
+          confidence: 100,
+          reason: linkedModelSlot ? `${linkedNames.join("与")}已同步使用同一张模特图` : "已由设计师人工确认",
+        };
+      });
+      slotsRef.current = nextSlots;
+      return nextSlots;
+    });
   }
 
   function openAdjustmentEditor(
@@ -1671,7 +1809,11 @@ export default function VipOrganizer() {
     while (adjustments.length <= sourceIndex) adjustments.push({ ...DEFAULT_ADJUSTMENT });
     adjustments[sourceIndex] = normalizeAdjustment(adjustment);
     const updatedSlot = { ...currentSlot, adjustments, logo_color: logoColor };
-    setSlots((current) => current.map((slot) => slot.file_name === fileName ? updatedSlot : slot));
+    setSlots((current) => {
+      const nextSlots = current.map((slot) => slot.file_name === fileName ? updatedSlot : slot);
+      slotsRef.current = nextSlots;
+      return nextSlots;
+    });
     if (previewUrl) {
       const previewKey = slotPreviewKey(platform, fileName, targetFolder);
       slotPreviewSignaturesRef.current[previewKey] = slotPreviewSignature(
@@ -1731,29 +1873,27 @@ export default function VipOrganizer() {
 
   async function changePlatform(nextPlatform: OrganizerPlatform) {
     if (nextPlatform === platform) return;
+    if (reanalyzeTimerRef.current !== null) {
+      window.clearTimeout(reanalyzeTimerRef.current);
+      reanalyzeTimerRef.current = null;
+    }
     const scrollTop = window.scrollY;
     previewAbortRef.current?.abort();
     previewRequestRef.current += 1;
     platformWorkspaceRef.current[platform] = {
-      slots,
+      slots: slotsRef.current,
       previews: slotPreviews,
       signatures: { ...slotPreviewSignaturesRef.current }
     };
     setAdjustmentEditor(null);
     const cached = platformWorkspaceRef.current[nextPlatform];
-    const cachedSlots = cached?.slots || [];
-    const cachedTargets = cachedSlots.flatMap((slot) =>
-      previewFoldersForSlot(slot, nextPlatform).map((targetFolder) => slotPreviewKey(nextPlatform, slot.file_name, targetFolder))
-    );
-    const cachedIsComplete = Boolean(cached && cachedTargets.length > 0 && cachedTargets.every((key) => Boolean(cached.previews[key])));
-    if (cached && cachedIsComplete) {
+    if (cached) {
+      slotsRef.current = cached.slots;
       setSlots(cached.slots);
       setSlotPreviews({ ...cached.previews });
-      // Keep the last images visible while forcing the preview effect to verify
-      // every slot for the platform being restored.
-      slotPreviewSignaturesRef.current = {};
+      slotPreviewSignaturesRef.current = { ...cached.signatures };
       setPlatform(nextPlatform);
-      setMessage(`已切换到${nextPlatform === "jd" ? "京东" : "唯品会"}，正在验证全部预览。`);
+      setMessage(`已切换到${nextPlatform === "jd" ? "京东" : "唯品会"}，已恢复该平台预览；缺失项会单独补充。`);
       window.requestAnimationFrame(() => window.scrollTo({ top: scrollTop, left: 0, behavior: "auto" }));
       return;
     }
