@@ -41,7 +41,7 @@ JD_LOGO_BLACK_PATH = Path(__file__).resolve().parents[1] / "assets" / "elle_logo
 JD_LOGO_WHITE_PATH = Path(__file__).resolve().parents[1] / "assets" / "elle_logo_white.png"
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
-PREVIEW_RENDER_VERSION = 16
+PREVIEW_RENDER_VERSION = 17
 MAX_PREVIEW_CACHE_ENTRIES = 48
 JD_PHONE_HEIGHT_MM = 163.0
 JD_PHONE_LABEL = "iPhone 17 Pro Max"
@@ -1770,12 +1770,43 @@ def _info_measurement_bbox(cutout: Image.Image) -> tuple[int, int, int, int]:
     full_left, full_top = int(xs.min()), int(ys.min())
     full_right, full_bottom = int(xs.max()) + 1, int(ys.max()) + 1
     row_counts = mask.sum(axis=1)
+    row_spans = np.zeros(mask.shape[0], dtype=np.int32)
+    row_longest_segments = np.zeros(mask.shape[0], dtype=np.int32)
+    for row_index in np.flatnonzero(row_counts):
+        row_xs = np.flatnonzero(mask[row_index])
+        row_spans[row_index] = int(row_xs[-1] - row_xs[0] + 1)
+        split_points = np.flatnonzero(np.diff(row_xs) > 1)
+        segment_starts = np.r_[0, split_points + 1]
+        segment_ends = np.r_[split_points, len(row_xs) - 1]
+        row_longest_segments[row_index] = int(
+            np.max(row_xs[segment_ends] - row_xs[segment_starts] + 1)
+        )
     # A handle or chain may connect to the bag but normally occupies far fewer
     # pixels per row than the body. Keep the visible body shoulders while
     # excluding those sparse rows from the physical height ruler.
     # Handles, chain loops and sparse hardware can be visually thick while
     # still covering far less of each row than the actual bag body.
-    body_rows = row_counts >= max(8, int(round(float(row_counts.max()) * 0.38)))
+    max_row_count = float(row_counts.max())
+    body_rows = row_counts >= max(8, int(round(max_row_count * 0.38)))
+    full_width = max(1, full_right - full_left)
+    row_fill = np.divide(
+        row_counts,
+        row_spans,
+        out=np.zeros_like(row_counts, dtype=np.float64),
+        where=row_spans > 0,
+    )
+    # A hobo/crescent bag has two high body shoulders separated by its opening.
+    # Those rows are sparse by total pixel count, but span most of the bag and
+    # contain wider solid segments than chains. Include them without pulling a
+    # compact, continuous tote handle into the physical height measurement.
+    shoulder_rows = (
+        (row_counts >= max(6, int(round(max_row_count * 0.10))))
+        & (row_spans >= max(12, int(round(full_width * 0.55))))
+        & (row_longest_segments >= max(6, int(round(full_width * 0.07))))
+        & (row_fill >= 0.12)
+        & (row_fill <= 0.82)
+    )
+    body_rows |= shoulder_rows
     row_run = _mask_longest_run(body_rows)
     if row_run is None:
         return full_left, full_top, full_right, full_bottom

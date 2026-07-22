@@ -185,6 +185,35 @@ def test_vip_info_measurement_excludes_thick_tote_handles():
     assert right >= 390
 
 
+def test_vip_info_measurement_includes_hobo_body_shoulders():
+    layer = Image.new("RGBA", (520, 420), (0, 0, 0, 0))
+    mask = Image.new("L", layer.size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.polygon(
+        [
+            (25, 75),
+            (95, 18),
+            (170, 120),
+            (260, 165),
+            (350, 120),
+            (425, 18),
+            (495, 75),
+            (470, 385),
+            (50, 385),
+        ],
+        fill=255,
+    )
+    draw.ellipse((125, -35, 395, 180), fill=0)
+    layer.paste((70, 80, 90, 255), mask=mask)
+
+    left, top, right, bottom = service._info_measurement_bbox(layer)
+
+    assert top <= 35
+    assert bottom >= 380
+    assert left <= 55
+    assert right >= 465
+
+
 def _vip_info_test_source() -> Image.Image:
     source = Image.new("RGBA", (300, 220), (0, 0, 0, 0))
     draw = ImageDraw.Draw(source)

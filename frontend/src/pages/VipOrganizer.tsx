@@ -556,24 +556,48 @@ function liveInfoMeasurementBounds(canvas: HTMLCanvasElement): PixelBounds {
   if (!context) return { left: 0, top: 0, right: canvas.width, bottom: canvas.height };
   const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
   const rowCounts = new Array<number>(canvas.height).fill(0);
+  const rowSpans = new Array<number>(canvas.height).fill(0);
+  const rowLongestSegments = new Array<number>(canvas.height).fill(0);
   let fullLeft = canvas.width;
   let fullTop = canvas.height;
   let fullRight = 0;
   let fullBottom = 0;
   for (let y = 0; y < canvas.height; y += 1) {
+    let rowFirst = canvas.width;
+    let rowLast = -1;
+    let currentSegment = 0;
     for (let x = 0; x < canvas.width; x += 1) {
-      if (pixels[(y * canvas.width + x) * 4 + 3] <= 28) continue;
+      if (pixels[(y * canvas.width + x) * 4 + 3] <= 28) {
+        currentSegment = 0;
+        continue;
+      }
       rowCounts[y] += 1;
+      rowFirst = Math.min(rowFirst, x);
+      rowLast = x;
+      currentSegment += 1;
+      rowLongestSegments[y] = Math.max(rowLongestSegments[y], currentSegment);
       fullLeft = Math.min(fullLeft, x);
       fullTop = Math.min(fullTop, y);
       fullRight = Math.max(fullRight, x + 1);
       fullBottom = Math.max(fullBottom, y + 1);
     }
+    if (rowLast >= rowFirst) rowSpans[y] = rowLast - rowFirst + 1;
   }
   if (fullRight <= fullLeft || fullBottom <= fullTop) {
     return { left: 0, top: 0, right: canvas.width, bottom: canvas.height };
   }
-  const broadRun = longestTrueRun(rowCounts.map((count) => count >= Math.max(8, Math.round(Math.max(...rowCounts) * 0.38))));
+  const maxRowWidth = Math.max(...rowCounts);
+  const fullWidth = Math.max(1, fullRight - fullLeft);
+  const broadRun = longestTrueRun(rowCounts.map((count, index) => {
+    const coreBody = count >= Math.max(8, Math.round(maxRowWidth * 0.38));
+    const fill = rowSpans[index] > 0 ? count / rowSpans[index] : 0;
+    const crescentShoulder = count >= Math.max(6, Math.round(maxRowWidth * 0.10))
+      && rowSpans[index] >= Math.max(12, Math.round(fullWidth * 0.55))
+      && rowLongestSegments[index] >= Math.max(6, Math.round(fullWidth * 0.07))
+      && fill >= 0.12
+      && fill <= 0.82;
+    return coreBody || crescentShoulder;
+  }));
   if (!broadRun) return { left: fullLeft, top: fullTop, right: fullRight, bottom: fullBottom };
   const columnCounts = new Array<number>(canvas.width).fill(0);
   for (let y = broadRun.start; y < broadRun.end; y += 1) {
