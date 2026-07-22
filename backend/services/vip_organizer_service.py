@@ -39,7 +39,7 @@ JD_LOGO_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "
 JD_PHONE_REFERENCE_PATH = Path(__file__).resolve().parents[1] / "assets" / "iphone_reference.png"
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
-PREVIEW_RENDER_VERSION = 6
+PREVIEW_RENDER_VERSION = 7
 MAX_PREVIEW_CACHE_ENTRIES = 96
 
 
@@ -1569,10 +1569,14 @@ def _paste_layer(
     adjustment: dict[str, Any] | None = None,
     *,
     mode: str = "contain",
+    clip_box: tuple[int, int, int, int] | None = None,
 ) -> None:
     left, top, right, bottom = box
     box_width = max(1, right - left)
     box_height = max(1, bottom - top)
+    clip_left, clip_top, clip_right, clip_bottom = clip_box or box
+    clip_width = max(1, clip_right - clip_left)
+    clip_height = max(1, clip_bottom - clip_top)
     normalized = _normalize_adjustment(adjustment)
     if mode == "cover":
         base_scale = max(box_width / layer.width, box_height / layer.height)
@@ -1584,22 +1588,48 @@ def _paste_layer(
         max(1, int(round(layer.height * scale))),
     )
     rendered = layer.resize(rendered_size, Image.Resampling.LANCZOS)
-    x = (box_width - rendered.width) // 2 + int(round(normalized["offset_x"] * box_width))
-    y = (box_height - rendered.height) // 2 + int(round(normalized["offset_y"] * box_height))
+    global_x = left + (box_width - rendered.width) // 2 + int(round(normalized["offset_x"] * box_width))
+    global_y = top + (box_height - rendered.height) // 2 + int(round(normalized["offset_y"] * box_height))
+    if rendered.width <= clip_width:
+        global_x = max(clip_left, min(global_x, clip_right - rendered.width))
+    if rendered.height <= clip_height:
+        global_y = max(clip_top, min(global_y, clip_bottom - rendered.height))
+    x = global_x - clip_left
+    y = global_y - clip_top
     region_mode = "RGBA" if canvas.mode == "RGBA" or rendered.mode == "RGBA" else "RGB"
     region_background = (255, 255, 255, 0) if region_mode == "RGBA" else "white"
-    region = Image.new(region_mode, (box_width, box_height), region_background)
+    region = Image.new(region_mode, (clip_width, clip_height), region_background)
     if region_mode == "RGBA":
         layer_rgba = rendered.convert("RGBA")
         region.alpha_composite(layer_rgba, (x, y))
     else:
         region.paste(rendered.convert("RGB"), (x, y))
     if canvas.mode == "RGBA":
-        canvas.alpha_composite(region.convert("RGBA"), (left, top))
+        canvas.alpha_composite(region.convert("RGBA"), (clip_left, clip_top))
     elif region.mode == "RGBA":
-        canvas.paste(region.convert("RGB"), (left, top), region.getchannel("A"))
+        canvas.paste(region.convert("RGB"), (clip_left, clip_top), region.getchannel("A"))
     else:
-        canvas.paste(region, (left, top))
+        canvas.paste(region, (clip_left, clip_top))
+
+
+def _expanded_safe_box(
+    box: tuple[int, int, int, int],
+    canvas_size: tuple[int, int],
+    *,
+    padding_ratio: float = 0.055,
+) -> tuple[int, int, int, int]:
+    width, height = canvas_size
+    left, top, right, bottom = box
+    pad_x = max(18, round(width * padding_ratio))
+    pad_y = max(18, round(height * padding_ratio))
+    margin_x = round(width * 0.04)
+    margin_y = round(height * 0.04)
+    return (
+        max(margin_x, left - pad_x),
+        max(margin_y, top - pad_y),
+        min(width - margin_x, right + pad_x),
+        min(height - margin_y, bottom + pad_y),
+    )
 
 
 def _paste_product(
@@ -1607,6 +1637,8 @@ def _paste_product(
     source: Image.Image,
     box: tuple[int, int, int, int],
     adjustment: dict[str, Any] | None = None,
+    *,
+    clip_box: tuple[int, int, int, int] | None = None,
 ) -> None:
     image_id = source.info.get("_organizer_image_id")
     modified_ns = source.info.get("_organizer_modified_ns")
@@ -1618,7 +1650,7 @@ def _paste_product(
         ).copy()
     else:
         cutout = _product_cutout(_crop_source(source, adjustment))
-    _paste_layer(canvas, cutout, box, adjustment)
+    _paste_layer(canvas, cutout, box, adjustment, clip_box=clip_box)
 
 
 def _paste_product_floating(
@@ -1669,7 +1701,8 @@ def _normalized_product_page(
     )
     background = (255, 255, 255, 0) if transparent else "white"
     canvas = Image.new("RGBA" if transparent else "RGB", size, background)
-    _paste_product(canvas, source, safe_box, adjustment)
+    clip_box = _expanded_safe_box(safe_box, size) if _has_manual_layout_adjustment(adjustment) else None
+    _paste_product(canvas, source, safe_box, adjustment, clip_box=clip_box)
     return canvas
 
 
@@ -1767,7 +1800,9 @@ def _model_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None 
     """Match the 601-603 reference: cropped model photo with a fixed white frame."""
     canvas = Image.new("RGB", (750, 750), "white")
     cropped = _crop_source(source.convert("RGB"), adjustment)
-    _paste_layer(canvas, cropped, (56, 65, 694, 699), adjustment, mode=_crop_aware_mode(adjustment, "cover"))
+    box = (56, 65, 694, 699)
+    clip_box = _expanded_safe_box(box, canvas.size) if _has_manual_layout_adjustment(adjustment) else None
+    _paste_layer(canvas, cropped, box, adjustment, mode=_crop_aware_mode(adjustment, "cover"), clip_box=clip_box)
     return canvas
 
 
@@ -1780,7 +1815,9 @@ def _detail_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None
     title_box = draw.textbbox((0, 0), title, font=title_font)
     draw.text(((750 - (title_box[2] - title_box[0])) / 2, 70), title, font=title_font, fill="#c4c4c4")
     cropped = _crop_source(source.convert("RGB"), adjustment)
-    _paste_layer(canvas, cropped, (52, 181, 695, 704), adjustment, mode=_crop_aware_mode(adjustment, "cover"))
+    box = (52, 181, 695, 704)
+    clip_box = _expanded_safe_box(box, canvas.size) if _has_manual_layout_adjustment(adjustment) else None
+    _paste_layer(canvas, cropped, box, adjustment, mode=_crop_aware_mode(adjustment, "cover"), clip_box=clip_box)
     return canvas
 
 
@@ -1803,7 +1840,8 @@ def _multi_angle_page(
     adjustments = adjustments or []
     for index, (image_id, box) in enumerate(zip(image_ids[:4], boxes)):
         adjustment = adjustments[index] if index < len(adjustments) else None
-        _paste_product(canvas, _load_image(image_id), box, adjustment)
+        clip_box = _expanded_safe_box(box, canvas.size, padding_ratio=0.035) if _has_manual_layout_adjustment(adjustment) else None
+        _paste_product(canvas, _load_image(image_id), box, adjustment, clip_box=clip_box)
     draw.line((346, 420, 404, 420), fill="#a8a8a8", width=2)
     draw.line((375, 391, 375, 449), fill="#a8a8a8", width=2)
     return canvas
@@ -1904,7 +1942,8 @@ def _jd_product_page(
             box = (100, 135, 700, 700)
         else:
             box = (100, 145, 650, 900)
-        _paste_product(canvas, source, box, adjustment)
+        clip_box = _expanded_safe_box(box, size) if _has_manual_layout_adjustment(adjustment) else None
+        _paste_product(canvas, source, box, adjustment, clip_box=clip_box)
     _draw_jd_elle_logo(canvas, size, logo_color)
     return canvas
 

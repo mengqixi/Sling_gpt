@@ -116,3 +116,8 @@ def test_401_manual_product_layer_can_move_outside_original_box():
 
     assert clipped.getpixel((50, 70)) == (255, 255, 255)
     assert floating.getpixel((50, 70))[0] > floating.getpixel((50, 70))[1]
+
+
+def test_expanded_safe_boxes_match_editor_padding_rules():
+    assert service._expanded_safe_box((120, 170, 680, 710), (800, 800)) == (76, 126, 724, 754)
+    assert service._expanded_safe_box((78, 195, 323, 365), (750, 750), padding_ratio=0.035) == (52, 169, 349, 391)

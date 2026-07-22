@@ -214,7 +214,16 @@ function slotEditorSafeAreaLayout(slot: Slot, platform: OrganizerPlatform, sourc
   if (platform === "jd" && slot.file_name === "5.jpg") {
     return { x: 0.04, y: 0.04, width: 0.92, height: 0.92 };
   }
-  return slotSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
+  const template = slotPreviewLayout(slot, platform, sourceIndex, targetFolder);
+  if (template.x <= 0.04 && template.y <= 0.04 && template.x + template.width >= 0.96 && template.y + template.height >= 0.96) {
+    return template;
+  }
+  const padding = slot.file_name === "606.jpg" ? 0.035 : 0.055;
+  const left = Math.max(0.04, template.x - padding);
+  const top = Math.max(0.04, template.y - padding);
+  const right = Math.min(0.96, template.x + template.width + padding);
+  const bottom = Math.min(0.96, template.y + template.height + padding);
+  return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
 function SlotSafeAreaOverlay({ slot, platform, sourceIndex, targetFolder }: {
@@ -224,12 +233,15 @@ function SlotSafeAreaOverlay({ slot, platform, sourceIndex, targetFolder }: {
   targetFolder: PreviewFolder;
 }) {
   const output = slotCanvasSize(slot.size, platform, targetFolder);
+  const template = slotSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
   const area = slotEditorSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
   const x = area.x * output.width;
   const y = area.y * output.height;
   const width = area.width * output.width;
   const height = area.height * output.height;
   const labelY = y > 24 ? y - 8 : y + 20;
+  const templateDiffers = Math.abs(template.x - area.x) + Math.abs(template.y - area.y)
+    + Math.abs(template.width - area.width) + Math.abs(template.height - area.height) > 0.001;
 
   return <svg
     className="slot-safe-area-overlay"
@@ -237,7 +249,11 @@ function SlotSafeAreaOverlay({ slot, platform, sourceIndex, targetFolder }: {
     preserveAspectRatio="xMidYMid meet"
     aria-hidden="true"
   >
-    <rect x={x} y={y} width={width} height={height} />
+    {templateDiffers && <>
+      <rect className="template-area" x={template.x * output.width} y={template.y * output.height} width={template.width * output.width} height={template.height * output.height} />
+      <text className="template-label" x={template.x * output.width + 8} y={template.y * output.height + 20}>模板区域</text>
+    </>}
+    <rect className="adjustment-area" x={x} y={y} width={width} height={height} />
     <text x={x + 8} y={labelY}>调整安全区</text>
   </svg>;
 }
@@ -356,33 +372,19 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       const drawHeight = sourceHeight * fitScale * draft.zoom;
       let drawX = areaX + (areaWidth - drawWidth) / 2 + draft.offset_x * areaWidth;
       let drawY = areaY + (areaHeight - drawHeight) / 2 + draft.offset_y * areaHeight;
-      const usesExpandedSafeArea = (platform === "vip" && slot.file_name === "401.jpg")
-        || (platform === "jd" && slot.file_name === "5.jpg");
-      if (usesExpandedSafeArea) {
-        const safeArea = slotEditorSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
-        const safeLeft = safeArea.x * output.width;
-        const safeTop = safeArea.y * output.height;
-        const safeRight = (safeArea.x + safeArea.width) * output.width;
-        const safeBottom = (safeArea.y + safeArea.height) * output.height;
-        drawX = Math.max(safeLeft, Math.min(drawX, safeRight - drawWidth));
-        drawY = Math.max(safeTop, Math.min(drawY, safeBottom - drawHeight));
-      }
+      const editorArea = slotEditorSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
+      const safeLeft = editorArea.x * output.width;
+      const safeTop = editorArea.y * output.height;
+      const safeRight = (editorArea.x + editorArea.width) * output.width;
+      const safeBottom = (editorArea.y + editorArea.height) * output.height;
+      if (drawWidth <= safeRight - safeLeft) drawX = Math.max(safeLeft, Math.min(drawX, safeRight - drawWidth));
+      if (drawHeight <= safeBottom - safeTop) drawY = Math.max(safeTop, Math.min(drawY, safeBottom - drawHeight));
 
       context.fillStyle = "#fff";
       context.fillRect(areaX, areaY, areaWidth, areaHeight);
       context.save();
       context.beginPath();
-      if (usesExpandedSafeArea) {
-        const editorArea = slotEditorSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
-        context.rect(
-          editorArea.x * output.width,
-          editorArea.y * output.height,
-          editorArea.width * output.width,
-          editorArea.height * output.height
-        );
-      } else {
-        context.rect(areaX, areaY, areaWidth, areaHeight);
-      }
+      context.rect(safeLeft, safeTop, safeRight - safeLeft, safeBottom - safeTop);
       context.clip();
       context.drawImage(
         image,
@@ -679,6 +681,7 @@ function SlotAdjustmentEditor({
   const [logoColor, setLogoColor] = useState<LogoColor>(slot.logo_color === "white" ? "white" : "black");
   const [renderedPreview, setRenderedPreview] = useState(initialPreview || "");
   const [previewSynced, setPreviewSynced] = useState(Boolean(initialPreview));
+  const [holdExactPreview, setHoldExactPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [cropMode, setCropMode] = useState(false);
@@ -721,6 +724,7 @@ function SlotAdjustmentEditor({
 
   function applyDraft(nextDraft: ImageAdjustment) {
     cancelStalePreview();
+    setHoldExactPreview(false);
     draftVersionRef.current += 1;
     draftRef.current = nextDraft;
     setDraft(nextDraft);
@@ -733,7 +737,12 @@ function SlotAdjustmentEditor({
     logoColorRef.current = nextColor;
     setLogoColor(nextColor);
     draftVersionRef.current += 1;
+    const nextVersion = draftVersionRef.current;
+    setHoldExactPreview(Boolean(renderedPreviewRef.current));
     setPreviewSynced(false);
+    void refreshPreview(draftRef.current, nextVersion).finally(() => {
+      if (draftVersionRef.current === nextVersion) setHoldExactPreview(false);
+    });
   }
 
   async function refreshPreview(
@@ -1040,12 +1049,12 @@ function SlotAdjustmentEditor({
                 productInfo={productInfo}
               />
               {renderedPreview && <img
-                className={`slot-exact-preview${previewSynced ? " is-visible" : ""}`}
+                className={`slot-exact-preview${previewSynced || holdExactPreview ? " is-visible" : ""}`}
                 src={renderedPreview}
                 alt={`${slot.file_name} 精确成品预览`}
                 draggable={false}
               />}
-              {previewSynced && <SlotSafeAreaOverlay
+              {(previewSynced || holdExactPreview) && <SlotSafeAreaOverlay
                 slot={slot}
                 platform={platform}
                 sourceIndex={sourceIndex}
