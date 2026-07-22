@@ -57,6 +57,7 @@
 
 /* VIP.com deterministic asset organizer */
 .organizer-page { max-width: 1700px; }
+.organizer-page > .page-header h1, .organizer-page .section-title-row > h2, .organizer-analysis-header > h2 { margin-bottom: 0; }
 .organizer-source-panel, .organizer-analysis-panel, .organizer-info-panel, .organizer-slots-panel { margin-bottom: 16px; padding: 20px; }
 .organizer-source-panel h2, .organizer-analysis-panel h2, .organizer-info-panel h2, .organizer-slots-panel h2 { margin: 0 0 10px; font-size: 20px; }
 .organizer-analysis-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 22px; margin-bottom: 18px; padding-bottom: 16px; border-bottom: 1px solid #e2e7e4; }

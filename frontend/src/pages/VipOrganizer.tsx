@@ -2644,13 +2644,12 @@ export default function VipOrganizer() {
   return (
     <section className="page organizer-page">
       <header className="page-header">
-        <h1>唯品会自动化整理</h1>
-        <p>上传商品原图和模特图，本地生成15张唯品会套图初稿；需要时可手动调用一次图文分析 API。</p>
+        <h1>自动化整理</h1>
       </header>
 
       <section className="panel organizer-source-panel">
         <div className="section-title-row">
-          <div><h2>1. 上传素材</h2><p>商品图和模特图分开上传，可以显著减少错误分类。</p></div>
+          <h2>1. 上传素材</h2>
           <div className="button-row">
             {sessionId && <button disabled={busy} onClick={startNewSession}><RefreshCw size={18} />开始新一轮</button>}
             <button className="primary" disabled={busy || !products.length} onClick={() => analyze()}>
@@ -2659,16 +2658,16 @@ export default function VipOrganizer() {
           </div>
         </div>
         <div className="organizer-upload-columns">
-          <UploadSection title="商品原图" hint="一次可多选；正面、侧面、背面、Logo、内里、透明图等" items={products} disabled={busy} onUpload={(files) => upload("product", files)} onPreview={setPreview} />
-          <UploadSection title="模特图" hint="一次可多选；建议至少3张，系统分别用于主图和详情页" items={models} disabled={busy} onUpload={(files) => upload("model", files)} onPreview={setPreview} />
-          <UploadSection title="吊牌图" hint="可选；用于801.jpg" items={tags} multiple={false} disabled={busy} onUpload={(files) => upload("tag", files)} onPreview={setPreview} />
+          <UploadSection title="商品原图" hint="支持多选" items={products} disabled={busy} onUpload={(files) => upload("product", files)} onPreview={setPreview} />
+          <UploadSection title="模特图" hint="支持多选" items={models} disabled={busy} onUpload={(files) => upload("model", files)} onPreview={setPreview} />
+          <UploadSection title="吊牌图" hint="可选" items={tags} multiple={false} disabled={busy} onUpload={(files) => upload("tag", files)} onPreview={setPreview} />
         </div>
       </section>
 
       {slots.length > 0 && <>
         <section className="panel organizer-analysis-panel">
           <div className="organizer-analysis-header">
-            <div><h2>2. 素材分析</h2><p>主类别决定图片用途，细节标签可以多选；低可信度结果建议人工确认或调用一次API。</p></div>
+            <h2>2. 素材分析</h2>
             <div className="organizer-analysis-toolbar">
               <label className="organizer-api-select">
                 <span>图文分析 API</span>
@@ -2677,7 +2676,7 @@ export default function VipOrganizer() {
                   {analysisConfigs.map((item) => <option value={item.id} key={item.id}>{item.config_name}{item.is_default ? "（默认）" : ""}</option>)}
                 </select>
               </label>
-              <button disabled={busy || !analysisConfigId} onClick={analyzeWithApi}><RefreshCw size={18} />API 分析素材（1次）</button>
+              <button disabled={busy || !analysisConfigId} onClick={analyzeWithApi}><RefreshCw size={18} />API 分析</button>
               <button className="primary" disabled={busy} onClick={() => analyze()}>
                 {busy ? <LoaderCircle className="spin" size={18} /> : <RefreshCw size={18} />}按标签重新整理
               </button>
@@ -2725,7 +2724,7 @@ export default function VipOrganizer() {
         </section>
 
         <section className="panel organizer-info-panel">
-          <div className="section-title-row"><div><h2>3. 商品信息</h2><p>填写长和高后，生成401.jpg产品信息页和京东5.jpg尺寸与手机对比图。</p></div></div>
+          <div className="section-title-row"><h2>3. 商品信息</h2></div>
           <div className="organizer-info-grid">
             <label>商品名称<input value={info.product_name} onChange={(event) => setInfo({ ...info, product_name: event.target.value })} /></label>
             <label>长（cm）<input inputMode="decimal" placeholder="例如：20" value={info.product_length} onChange={(event) => setInfo({ ...info, product_length: event.target.value })} /></label>
@@ -2740,10 +2739,7 @@ export default function VipOrganizer() {
 
         <section className="panel organizer-slots-panel">
           <div className="organizer-platform-switcher" aria-label="输出平台">
-            <div>
-              <strong>输出平台</strong>
-              <span>图片、标签和商品信息通用；这里选择最终输出模板、尺寸、文件名和 ZIP 目录</span>
-            </div>
+            <div><strong>输出平台</strong></div>
             <div className="organizer-platform-tabs" role="tablist" aria-label="选择输出平台">
               {ORGANIZER_PLATFORMS.map((item) => (
                 <button
@@ -2760,7 +2756,7 @@ export default function VipOrganizer() {
               ))}
             </div>
           </div>
-          <div className="section-title-row"><div><h2>4. 检查{platform === "jd" ? "京东7个输出位置" : "15个输出位置"}</h2><p>点击成品图或“调整”，可独立裁剪、缩放和移动来源图；模板、文字与原图曝光不会改变。</p></div>{(previewBusy || platformSwitching) && <span className="organizer-preview-status"><LoaderCircle className="spin" size={16} />{platformSwitching ? "正在切换输出平台" : "正在更新成品预览"}</span>}</div>
+          <div className="section-title-row"><h2>4. 检查{platform === "jd" ? "京东7个输出位置" : "15个输出位置"}</h2>{(previewBusy || platformSwitching) && <span className="organizer-preview-status"><LoaderCircle className="spin" size={16} />{platformSwitching ? "正在切换输出平台" : "正在更新成品预览"}</span>}</div>
           <div className="organizer-preview-groups">
             {previewGroups.map((group) => <section className="organizer-preview-group" key={group.folder}>
               {group.label && <header className="organizer-preview-group-header">
