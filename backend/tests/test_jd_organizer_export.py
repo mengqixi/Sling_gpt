@@ -171,6 +171,20 @@ def test_vip_info_measurement_excludes_sparse_handle():
     assert right >= 290
 
 
+def test_vip_info_measurement_excludes_thick_tote_handles():
+    layer = Image.new("RGBA", (440, 440), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    draw.arc((120, 20, 320, 285), 180, 360, fill=(30, 30, 30, 255), width=42)
+    draw.rectangle((45, 180, 395, 410), fill=(70, 70, 70, 255))
+
+    left, top, right, bottom = service._info_measurement_bbox(layer)
+
+    assert top >= 175
+    assert bottom >= 405
+    assert left <= 50
+    assert right >= 390
+
+
 def _vip_info_test_source() -> Image.Image:
     source = Image.new("RGBA", (300, 220), (0, 0, 0, 0))
     draw = ImageDraw.Draw(source)
@@ -267,6 +281,36 @@ def test_jd_phone_renderer_accepts_fractional_position():
     canvas = Image.new("RGB", (800, 800), "white")
     box = service._draw_jd_phone_reference(canvas, 600.4, 212.6, 163.2)
     assert all(isinstance(value, int) for value in box)
+
+
+def test_jd_size_rulers_stay_visible_when_adjusting_objects_only():
+    source = Image.new("RGBA", (420, 320), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(source)
+    draw.arc((120, 15, 300, 205), 180, 360, fill=(40, 40, 40, 255), width=12)
+    draw.rounded_rectangle((45, 130, 375, 300), radius=18, fill=(150, 160, 175, 255))
+    info = {"product_length": "20", "product_height": "14"}
+
+    linked = service._jd_size_comparison_page(
+        source,
+        (800, 800),
+        info,
+        {"product_show_ruler": True, "phone_show_ruler": True},
+    )
+    objects_only = service._jd_size_comparison_page(
+        source,
+        (800, 800),
+        info,
+        {"product_show_ruler": False, "phone_show_ruler": False},
+    )
+    moved_phone_only = service._jd_size_comparison_page(
+        source,
+        (800, 800),
+        info,
+        {"phone_offset_x": -0.15, "phone_offset_y": -0.12, "phone_show_ruler": False},
+    )
+
+    assert np.array_equal(np.asarray(linked), np.asarray(objects_only))
+    assert not np.array_equal(np.asarray(objects_only), np.asarray(moved_phone_only))
 
 
 def test_product_cutout_removes_connected_light_gradient_without_losing_white_bag():
@@ -396,6 +440,9 @@ class JdOrganizerGeometryTests(unittest.TestCase):
     def test_phone_renderer_rounds_coordinates(self):
         test_jd_phone_renderer_accepts_fractional_position()
 
+    def test_jd_object_only_modes_keep_rulers_visible(self):
+        test_jd_size_rulers_stay_visible_when_adjusting_objects_only()
+
     def test_phone_comparison_dimension_gate(self):
         test_jd_phone_comparison_waits_for_length_and_height()
 
@@ -404,6 +451,9 @@ class JdOrganizerGeometryTests(unittest.TestCase):
 
     def test_vip_info_excludes_handle(self):
         test_vip_info_measurement_excludes_sparse_handle()
+
+    def test_vip_info_excludes_thick_handles(self):
+        test_vip_info_measurement_excludes_thick_tote_handles()
 
     def test_vip_info_product_only_keeps_rulers_fixed(self):
         test_vip_info_only_product_keeps_all_rulers_fixed()

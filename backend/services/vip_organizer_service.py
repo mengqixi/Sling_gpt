@@ -41,7 +41,7 @@ JD_LOGO_BLACK_PATH = Path(__file__).resolve().parents[1] / "assets" / "elle_logo
 JD_LOGO_WHITE_PATH = Path(__file__).resolve().parents[1] / "assets" / "elle_logo_white.png"
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
-PREVIEW_RENDER_VERSION = 15
+PREVIEW_RENDER_VERSION = 16
 MAX_PREVIEW_CACHE_ENTRIES = 48
 JD_PHONE_HEIGHT_MM = 163.0
 JD_PHONE_LABEL = "iPhone 17 Pro Max"
@@ -1773,7 +1773,9 @@ def _info_measurement_bbox(cutout: Image.Image) -> tuple[int, int, int, int]:
     # A handle or chain may connect to the bag but normally occupies far fewer
     # pixels per row than the body. Keep the visible body shoulders while
     # excluding those sparse rows from the physical height ruler.
-    body_rows = row_counts >= max(8, int(round(float(row_counts.max()) * 0.22)))
+    # Handles, chain loops and sparse hardware can be visually thick while
+    # still covering far less of each row than the actual bag body.
+    body_rows = row_counts >= max(8, int(round(float(row_counts.max()) * 0.38)))
     row_run = _mask_longest_run(body_rows)
     if row_run is None:
         return full_left, full_top, full_right, full_bottom
@@ -2562,7 +2564,9 @@ def _jd_size_comparison_page(
     width, height = size
     normalized = _normalize_adjustment(adjustment)
     cutout = _product_cutout(_crop_source(source, adjustment))
-    layout = _jd_size_product_layout(cutout, _jd_product_body_bbox(cutout), size, product_info, adjustment)
+    body_bbox = _jd_product_body_bbox(cutout)
+    layout = _jd_size_product_layout(cutout, body_bbox, size, product_info, adjustment)
+    base_layout = _jd_size_product_layout(cutout, body_bbox, size, product_info, None)
     resized_width = layout["rendered_width"]
     resized_height = layout["rendered_height"]
     cutout = cutout.resize((resized_width, resized_height), Image.Resampling.LANCZOS)
@@ -2586,10 +2590,10 @@ def _jd_size_comparison_page(
     phone_left = round(phone_center_x - phone_width / 2)
     phone_ruler_gap = max(38, round(width * 0.075))
     phone_label_clearance = max(40, round(width * 0.05))
-    phone_right_allowance = phone_ruler_gap + phone_label_clearance if normalized["phone_show_ruler"] else 0
+    phone_right_allowance = phone_ruler_gap + phone_label_clearance
     phone_left = min(max(safe_left, phone_left), max(safe_left, safe_right - phone_width - phone_right_allowance))
     phone_center_x = phone_left + phone_width / 2
-    phone_bottom_allowance = 0 if not normalized["phone_show_ruler"] else max(28, round(height * 0.055))
+    phone_bottom_allowance = max(28, round(height * 0.055))
     phone_top = min(max(safe_top, phone_top), max(safe_top, safe_bottom - phone_height - phone_bottom_allowance))
     phone_box = _draw_jd_phone_reference(
         canvas,
@@ -2599,42 +2603,74 @@ def _jd_size_comparison_page(
     )
 
     ruler_gap = max(28, round(width * 0.045))
-    if normalized["product_show_ruler"]:
-        horizontal_y = min(height - 70, rendered_body[3] + ruler_gap)
-        _draw_jd_dimension_bar(
-            canvas,
-            (rendered_body[0], horizontal_y),
-            (rendered_body[2], horizontal_y),
-            _dimension_mm(product_info.get("product_length", "")),
+    product_ruler_body = rendered_body if normalized["product_show_ruler"] else base_layout["body_box"]
+    horizontal_y = min(height - 70, product_ruler_body[3] + ruler_gap)
+    _draw_jd_dimension_bar(
+        canvas,
+        (product_ruler_body[0], horizontal_y),
+        (product_ruler_body[2], horizontal_y),
+        _dimension_mm(product_info.get("product_length", "")),
+    )
+    vertical_x = max(30, product_ruler_body[0] - ruler_gap)
+    _draw_jd_dimension_bar(
+        canvas,
+        (vertical_x, product_ruler_body[1]),
+        (vertical_x, product_ruler_body[3]),
+        _dimension_mm(product_info.get("product_height", "")),
+        vertical=True,
+    )
+
+    phone_is_at_baseline = (
+        abs(normalized["phone_scale"] - 1.0) <= 0.0001
+        and abs(normalized["phone_offset_x"]) <= 0.0001
+        and abs(normalized["phone_offset_y"]) <= 0.0001
+    )
+    if normalized["phone_show_ruler"] or phone_is_at_baseline:
+        phone_ruler_box = phone_box
+    else:
+        base_phone_height = round(JD_PHONE_HEIGHT_MM * rendered_pixels_per_mm)
+        base_phone_height = max(round(height * 0.095), min(round(height * 0.46), base_phone_height))
+        base_phone_width = max(
+            42,
+            round(base_phone_height * reference.width / reference.height)
+            if reference is not None
+            else round(base_phone_height * 0.83),
         )
-        vertical_x = max(30, rendered_body[0] - ruler_gap)
-        _draw_jd_dimension_bar(
-            canvas,
-            (vertical_x, rendered_body[1]),
-            (vertical_x, rendered_body[3]),
-            _dimension_mm(product_info.get("product_height", "")),
-            vertical=True,
+        base_phone_left = round(width * 0.75 - base_phone_width / 2)
+        base_phone_top = _jd_aligned_phone_top(rendered_body, base_phone_height, normalized["phone_alignment"])
+        base_phone_left = min(
+            max(safe_left, base_phone_left),
+            max(safe_left, safe_right - base_phone_width - phone_right_allowance),
+        )
+        base_phone_top = min(
+            max(safe_top, base_phone_top),
+            max(safe_top, safe_bottom - base_phone_height - phone_bottom_allowance),
+        )
+        phone_ruler_box = (
+            base_phone_left,
+            base_phone_top,
+            base_phone_left + base_phone_width,
+            base_phone_top + base_phone_height,
         )
 
-    if normalized["phone_show_ruler"]:
-        phone_ruler_x = min(safe_right - phone_label_clearance, phone_box[2] + phone_ruler_gap)
-        _draw_jd_dimension_bar(
-            canvas,
-            (phone_ruler_x, phone_box[1]),
-            (phone_ruler_x, phone_box[3]),
-            "163mm",
-            vertical=True,
-            vertical_label_side="right",
-        )
-        label_font = _font(max(13, round(min(size) * 0.02)))
-        phone_label = JD_PHONE_LABEL
-        label_box = draw.textbbox((0, 0), phone_label, font=label_font)
-        draw.text(
-            (round((phone_box[0] + phone_box[2] - (label_box[2] - label_box[0])) / 2), phone_box[3] + 12),
-            phone_label,
-            font=label_font,
-            fill="#555555",
-        )
+    phone_ruler_x = min(safe_right - phone_label_clearance, phone_ruler_box[2] + phone_ruler_gap)
+    _draw_jd_dimension_bar(
+        canvas,
+        (phone_ruler_x, phone_ruler_box[1]),
+        (phone_ruler_x, phone_ruler_box[3]),
+        "163mm",
+        vertical=True,
+        vertical_label_side="right",
+    )
+    label_font = _font(max(13, round(min(size) * 0.02)))
+    phone_label = JD_PHONE_LABEL
+    label_box = draw.textbbox((0, 0), phone_label, font=label_font)
+    draw.text(
+        (round((phone_ruler_box[0] + phone_ruler_box[2] - (label_box[2] - label_box[0])) / 2), phone_ruler_box[3] + 12),
+        phone_label,
+        font=label_font,
+        fill="#555555",
+    )
     return canvas
 
 

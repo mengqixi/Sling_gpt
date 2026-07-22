@@ -573,7 +573,7 @@ function liveInfoMeasurementBounds(canvas: HTMLCanvasElement): PixelBounds {
   if (fullRight <= fullLeft || fullBottom <= fullTop) {
     return { left: 0, top: 0, right: canvas.width, bottom: canvas.height };
   }
-  const broadRun = longestTrueRun(rowCounts.map((count) => count >= Math.max(8, Math.round(Math.max(...rowCounts) * 0.22))));
+  const broadRun = longestTrueRun(rowCounts.map((count) => count >= Math.max(8, Math.round(Math.max(...rowCounts) * 0.38))));
   if (!broadRun) return { left: fullLeft, top: fullTop, right: fullRight, bottom: fullBottom };
   const columnCounts = new Array<number>(canvas.width).fill(0);
   for (let y = broadRun.start; y < broadRun.end; y += 1) {
@@ -850,6 +850,12 @@ function drawJdComparisonPreview(
 ) {
   const layer = liveJdProductLayer(sourceUrl, image, draft);
   const geometry = jdProductGeometry(output, layer, draft, productInfo);
+  const baseGeometry = jdProductGeometry(output, layer, {
+    ...draft,
+    zoom: 1,
+    offset_x: 0,
+    offset_y: 0
+  }, productInfo);
   context.fillStyle = "#f3f3f3";
   context.fillRect(0, 0, output.width, output.height);
   if (logoReference?.complete && logoReference.naturalWidth) {
@@ -864,52 +870,54 @@ function drawJdComparisonPreview(
   const heightValue = Number.parseFloat(productInfo.product_height || "");
   const lengthLabel = Number.isFinite(lengthValue) ? `${Math.round(lengthValue * 10)}mm` : "200mm";
   const heightLabel = Number.isFinite(heightValue) ? `${Math.round(heightValue * 10)}mm` : `${Math.round(geometry.heightMm)}mm`;
-  if (draft.product_show_ruler !== false) {
-    const horizontalY = Math.min(output.height - 58, geometry.body.bottom + rulerGap);
-    const verticalX = Math.max(output.width * 0.04, geometry.body.left - rulerGap);
-    drawCanvasRuler(context, { x: geometry.body.left, y: horizontalY }, { x: geometry.body.right, y: horizontalY }, lengthLabel, output);
-    drawCanvasRuler(context, { x: verticalX, y: geometry.body.top }, { x: verticalX, y: geometry.body.bottom }, heightLabel, output, true);
-  }
+  const productRulerBody = draft.product_show_ruler !== false ? geometry.body : baseGeometry.body;
+  const horizontalY = Math.min(output.height - 58, productRulerBody.bottom + rulerGap);
+  const verticalX = Math.max(output.width * 0.04, productRulerBody.left - rulerGap);
+  drawCanvasRuler(context, { x: productRulerBody.left, y: horizontalY }, { x: productRulerBody.right, y: horizontalY }, lengthLabel, output);
+  drawCanvasRuler(context, { x: verticalX, y: productRulerBody.top }, { x: verticalX, y: productRulerBody.bottom }, heightLabel, output, true);
 
-  const phoneHeight = Math.max(
-    output.height * 0.095,
-    Math.min(output.height * 0.46, geometry.baseBodyHeight * (163 / geometry.heightMm) * (draft.phone_scale || 1))
-  );
-  const phoneWidth = phoneReference?.naturalWidth && phoneReference.naturalHeight
-    ? phoneHeight * phoneReference.naturalWidth / phoneReference.naturalHeight
-    : phoneHeight * 0.78;
   const phoneRulerGap = Math.max(38, output.width * 0.075);
   const phoneLabelClearance = Math.max(40, output.width * 0.05);
-  const phoneRightAllowance = draft.phone_show_ruler === false ? 0 : phoneRulerGap + phoneLabelClearance;
-  const phoneBottomAllowance = draft.phone_show_ruler === false ? 0 : Math.max(28, output.height * 0.055);
-  let phoneLeft = output.width * 0.75 + (draft.phone_offset_x || 0) * output.width * 0.18 - phoneWidth / 2;
-  let phoneTop = (draft.phone_alignment || "bottom") === "bottom"
-    ? geometry.body.bottom - phoneHeight
-    : (geometry.body.top + geometry.body.bottom - phoneHeight) / 2;
-  phoneTop += (draft.phone_offset_y || 0) * output.height * 0.18;
-  phoneLeft = Math.max(geometry.safe.left, Math.min(phoneLeft, geometry.safe.right - phoneWidth - phoneRightAllowance));
-  phoneTop = Math.max(geometry.safe.top, Math.min(phoneTop, geometry.safe.bottom - phoneHeight - phoneBottomAllowance));
-  if (phoneReference?.complete && phoneReference.naturalWidth) {
-    context.drawImage(phoneReference, phoneLeft, phoneTop, phoneWidth, phoneHeight);
-  }
-  if (draft.phone_show_ruler !== false) {
-    const phoneRulerX = Math.min(geometry.safe.right - phoneLabelClearance, phoneLeft + phoneWidth + phoneRulerGap);
-    drawCanvasRuler(
-      context,
-      { x: phoneRulerX, y: phoneTop },
-      { x: phoneRulerX, y: phoneTop + phoneHeight },
-      "163mm",
-      output,
-      true,
-      true
+  const phoneRightAllowance = phoneRulerGap + phoneLabelClearance;
+  const phoneBottomAllowance = Math.max(28, output.height * 0.055);
+  const placePhone = (scale: number, offsetX: number, offsetY: number) => {
+    const height = Math.max(
+      output.height * 0.095,
+      Math.min(output.height * 0.46, geometry.baseBodyHeight * (163 / geometry.heightMm) * scale)
     );
-    context.save();
-    context.fillStyle = "#666";
-    context.font = `500 ${Math.max(12, Math.round(output.width * 0.017))}px sans-serif`;
-    context.textAlign = "center";
-    context.fillText("iPhone 17 Pro Max", phoneLeft + phoneWidth / 2, phoneTop + phoneHeight + 22);
-    context.restore();
+    const width = phoneReference?.naturalWidth && phoneReference.naturalHeight
+      ? height * phoneReference.naturalWidth / phoneReference.naturalHeight
+      : height * 0.78;
+    let left = output.width * 0.75 + offsetX * output.width * 0.18 - width / 2;
+    let top = (draft.phone_alignment || "bottom") === "bottom"
+      ? geometry.body.bottom - height
+      : (geometry.body.top + geometry.body.bottom - height) / 2;
+    top += offsetY * output.height * 0.18;
+    left = Math.max(geometry.safe.left, Math.min(left, geometry.safe.right - width - phoneRightAllowance));
+    top = Math.max(geometry.safe.top, Math.min(top, geometry.safe.bottom - height - phoneBottomAllowance));
+    return { left, top, width, height };
+  };
+  const phone = placePhone(draft.phone_scale || 1, draft.phone_offset_x || 0, draft.phone_offset_y || 0);
+  if (phoneReference?.complete && phoneReference.naturalWidth) {
+    context.drawImage(phoneReference, phone.left, phone.top, phone.width, phone.height);
   }
+  const phoneRuler = draft.phone_show_ruler !== false ? phone : placePhone(1, 0, 0);
+  const phoneRulerX = Math.min(geometry.safe.right - phoneLabelClearance, phoneRuler.left + phoneRuler.width + phoneRulerGap);
+  drawCanvasRuler(
+    context,
+    { x: phoneRulerX, y: phoneRuler.top },
+    { x: phoneRulerX, y: phoneRuler.top + phoneRuler.height },
+    "163mm",
+    output,
+    true,
+    true
+  );
+  context.save();
+  context.fillStyle = "#666";
+  context.font = `500 ${Math.max(12, Math.round(output.width * 0.017))}px sans-serif`;
+  context.textAlign = "center";
+  context.fillText("iPhone 17 Pro Max", phoneRuler.left + phoneRuler.width / 2, phoneRuler.top + phoneRuler.height + 22);
+  context.restore();
 }
 
 function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, sourceIndex, targetFolder, productInfo, logoColor }: {
