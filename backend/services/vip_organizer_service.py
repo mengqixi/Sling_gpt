@@ -1757,9 +1757,17 @@ def _paste_product(
     layout_adjustment = adjustment
     if auto_handle_layout and not _has_manual_crop(adjustment):
         normalized = _normalize_adjustment(adjustment)
+        left, top, right, bottom = box
+        box_width = max(1, right - left)
+        box_height = max(1, bottom - top)
+        scale = min(box_width / cutout.width, box_height / cutout.height) * normalized["zoom"]
+        body_left, body_top, body_right, body_bottom = _info_measurement_bbox(cutout)
+        body_center_x = (body_left + body_right) / 2
+        body_center_y = (body_top + body_bottom) / 2
         layout_adjustment = {
             **normalized,
-            "offset_y": normalized["offset_y"] + auto_offset_y - 0.065 * _handle_visual_lift(cutout),
+            "offset_x": normalized["offset_x"] + (cutout.width / 2 - body_center_x) * scale / box_width,
+            "offset_y": normalized["offset_y"] + auto_offset_y + (cutout.height / 2 - body_center_y) * scale / box_height,
         }
     _paste_layer(canvas, cutout, box, layout_adjustment, clip_box=clip_box)
 
@@ -1902,8 +1910,14 @@ def _paste_info_product(
         (max(1, round(cutout.width * scale)), max(1, round(cutout.height * scale))),
         Image.Resampling.LANCZOS,
     )
+    body_left, body_top, body_right, body_bottom = _jd_product_body_bbox(cutout)
+    body_center_x = (body_left + body_right) / 2
+    body_center_y = (body_top + body_bottom) / 2
     x = left + (box_width - rendered.width) // 2 + round(normalized["offset_x"] * box_width)
     y = top + (box_height - rendered.height) // 2 + round(normalized["offset_y"] * box_height)
+    if not _has_manual_crop(adjustment):
+        x += round((cutout.width / 2 - body_center_x) * scale)
+        y += round((cutout.height / 2 - body_center_y) * scale)
     if _has_manual_layout_adjustment(adjustment):
         safe_left = round(canvas.width * 0.04)
         safe_top = round(canvas.height * 0.04)
@@ -1915,7 +1929,6 @@ def _paste_info_product(
             y = max(safe_top, min(y, safe_bottom - rendered.height))
 
     canvas.paste(rendered.convert("RGB"), (x, y), rendered.getchannel("A"))
-    body_left, body_top, body_right, body_bottom = _jd_product_body_bbox(cutout)
     return (
         x + body_left * scale,
         y + body_top * scale,
@@ -2026,7 +2039,7 @@ def _normalized_product_page(
         safe_box,
         size,
         padding_ratio=manual_padding_ratio if manual_padding_ratio is not None else (0.18 if auto_handle_layout else 0.055),
-    ) if _has_manual_layout_adjustment(adjustment) else None
+    ) if _has_manual_layout_adjustment(adjustment) or auto_handle_layout else None
     _paste_product(
         canvas,
         source,
@@ -2192,7 +2205,7 @@ def _model_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None 
 
 
 def _detail_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None = None) -> Image.Image:
-    """Match the 604-605 reference without changing the uploaded detail image."""
+    """Match the titled 604 interior-detail reference."""
     canvas = Image.new("RGB", (750, 750), "white")
     draw = ImageDraw.Draw(canvas)
     title = "细节展示"
@@ -2214,6 +2227,22 @@ def _detail_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None
         clip_box=clip_box,
         auto_zoom=0.82,
         auto_shape_layout=True,
+    )
+    return canvas
+
+
+def _hardware_detail_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None = None) -> Image.Image:
+    """Match the untitled 605 logo/hardware reference with its fixed white margin."""
+    canvas = Image.new("RGB", (750, 750), "white")
+    box = (52, 22, 693, 704)
+    clip_box = _expanded_safe_box(box, canvas.size, padding_ratio=0.055) if _has_manual_layout_adjustment(adjustment) else None
+    _paste_layer(
+        canvas,
+        _crop_source(source.convert("RGB"), adjustment),
+        box,
+        adjustment,
+        mode=_crop_aware_mode(adjustment, "cover"),
+        clip_box=clip_box,
     )
     return canvas
 
@@ -2358,7 +2387,7 @@ def _jd_product_page(
             box = (100, 135, 700, 700)
         else:
             box = (100, 145, 650, 900)
-        clip_box = _expanded_safe_box(box, size, padding_ratio=0.18) if _has_manual_layout_adjustment(adjustment) else None
+        clip_box = _expanded_safe_box(box, size, padding_ratio=0.18)
         _paste_product(canvas, source, box, adjustment, clip_box=clip_box, auto_handle_layout=True)
     _draw_jd_elle_logo(canvas, size, logo_color)
     return canvas
@@ -2820,7 +2849,7 @@ def _render_jd_slot_image(
         return _jd_model_page(source, size, adjustment, with_logo=True, logo_color=logo_color)
     if file_name == "2.jpg":
         return _jd_product_page(source, size, adjustment, logo_color=logo_color)
-    if file_name == "3.jpg":
+    if file_name in {"3.jpg", "4.jpg"}:
         canvas = Image.new("RGB", size, "white")
         _paste_layer(
             canvas,
@@ -2831,15 +2860,6 @@ def _render_jd_slot_image(
         )
         _draw_jd_elle_logo(canvas, size, logo_color)
         return canvas
-    if file_name == "4.jpg":
-        return _jd_product_page(
-            source,
-            size,
-            adjustment,
-            detail=True,
-            detail_offset_y=0.0,
-            logo_color=logo_color,
-        )
     if file_name == "5.jpg":
         if not _jd_size_dimensions_ready(product_info):
             return None
@@ -2954,8 +2974,10 @@ def _render_slot_image(
         return canvas
     if file_name in {"601.jpg", "602.jpg", "603.jpg"}:
         return _model_showcase_page(source, adjustment)
-    if file_name in {"604.jpg", "605.jpg"}:
+    if file_name == "604.jpg":
         return _detail_showcase_page(source, adjustment)
+    if file_name == "605.jpg":
+        return _hardware_detail_showcase_page(source, adjustment)
     if file_name == "801.jpg":
         return _normalized_product_page(source, size=(750, 750), box=(90, 105, 660, 665), adjustment=adjustment)
     return _catalog_product_page(source, adjustment)

@@ -111,6 +111,17 @@ def test_jd_logo_detail_fills_the_canvas_without_white_border():
     assert rendered.getpixel((797, 400)) == (181, 34, 38)
 
 
+def test_jd_interior_detail_fills_the_canvas_without_white_border():
+    source = Image.new("RGB", (800, 800), (181, 34, 38))
+    with patch.object(service, "_load_image", return_value=source):
+        rendered = service._render_jd_slot_image("4.jpg", [1], {}, [])
+
+    assert rendered is not None
+    assert rendered.size == (800, 800)
+    assert rendered.getpixel((2, 400)) == (181, 34, 38)
+    assert rendered.getpixel((797, 400)) == (181, 34, 38)
+
+
 def test_jd_single_model_preview_does_not_create_vip_model_slot():
     slot_map = service._slot_map(
         [{"file_name": "1.jpg", "image_ids": [7], "adjustments": [], "logo_color": "white"}],
@@ -300,6 +311,15 @@ def test_vip_info_product_and_rulers_share_zoom_and_movement():
     assert adjusted_width["text"] != base_width["text"]
 
 
+def test_vip_info_centers_the_bag_body_instead_of_the_handle_layer():
+    source = _vip_info_test_source()
+    body = service._paste_info_product(Image.new("RGB", (750, 665), "white"), source, None)
+    left, top, right, bottom = service.INFO_PRODUCT_BOX
+
+    assert abs((body[0] + body[2]) / 2 - (left + right) / 2) <= 1
+    assert abs((body[1] + body[3]) / 2 - (top + bottom) / 2) <= 1
+
+
 def test_vip_info_rulers_remain_visible_in_both_adjustment_modes():
     info = {"product_length": "19.5", "product_width": "5.5", "product_height": "14"}
     source = _vip_info_test_source()
@@ -425,6 +445,16 @@ def test_product_cutout_removes_connected_light_gradient_without_losing_white_ba
     assert np.asarray(cutout.getchannel("A")).mean() > 80
 
 
+def test_vip_605_uses_the_untitled_full_height_detail_template():
+    source = Image.new("RGB", (500, 500), "#3c6f91")
+    rendered = service._hardware_detail_showcase_page(source)
+
+    assert rendered.getpixel((375, 21)) == (255, 255, 255)
+    assert rendered.getpixel((375, 22)) == (60, 111, 145)
+    assert rendered.getpixel((375, 703)) == (60, 111, 145)
+    assert rendered.getpixel((375, 704)) == (255, 255, 255)
+
+
 def test_jd_body_measurement_excludes_sparse_handle_and_chain():
     layer = Image.new("RGBA", (360, 420), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
@@ -511,6 +541,9 @@ def test_jd_size_slot_prefers_transparent_front_when_available():
 
 
 class JdOrganizerGeometryTests(unittest.TestCase):
+    def test_jd_interior_detail_is_full_bleed(self):
+        test_jd_interior_detail_fills_the_canvas_without_white_border()
+
     def test_black_logo_template_geometry(self):
         test_jd_logo_matches_example_geometry()
 
@@ -562,8 +595,14 @@ class JdOrganizerGeometryTests(unittest.TestCase):
     def test_vip_info_rulers_follow_product(self):
         test_vip_info_product_and_rulers_share_zoom_and_movement()
 
+    def test_vip_info_centers_bag_body(self):
+        test_vip_info_centers_the_bag_body_instead_of_the_handle_layer()
+
     def test_vip_info_rulers_stay_visible(self):
         test_vip_info_rulers_remain_visible_in_both_adjustment_modes()
+
+    def test_vip_605_uses_untitled_template(self):
+        test_vip_605_uses_the_untitled_full_height_detail_template()
 
     def test_connected_background_cutout(self):
         test_product_cutout_removes_connected_light_gradient_without_losing_white_bag()

@@ -237,7 +237,7 @@ function slotPreviewLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex:
       return { x: 0, y: 0, width: 1, height: 1, mode: "cover" as const };
     }
     if (slot.file_name === "4.jpg") {
-      return { x: 0.0875, y: 0.145, width: 0.825, height: 0.775, mode: "cover" as const };
+      return { x: 0, y: 0, width: 1, height: 1, mode: "cover" as const };
     }
     return { x: 0.15, y: 0.2125, width: 0.7, height: 0.675, mode: "contain" as const };
   }
@@ -265,8 +265,11 @@ function slotPreviewLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex:
   if (["601.jpg", "602.jpg", "603.jpg"].includes(slot.file_name)) {
     return { x: 56 / 750, y: 65 / 750, width: 638 / 750, height: 634 / 750, mode: "cover" as const };
   }
-  if (["604.jpg", "605.jpg"].includes(slot.file_name)) {
+  if (slot.file_name === "604.jpg") {
     return { x: 52 / 750, y: 181 / 750, width: 643 / 750, height: 523 / 750, mode: "cover" as const };
+  }
+  if (slot.file_name === "605.jpg") {
+    return { x: 52 / 750, y: 22 / 750, width: 641 / 750, height: 682 / 750, mode: "cover" as const };
   }
   if (slot.file_name === "801.jpg") {
     return { x: 90 / 750, y: 105 / 750, width: 570 / 750, height: 560 / 750, mode: "contain" as const };
@@ -1103,11 +1106,11 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
     canvas.width = output.width;
     canvas.height = output.height;
     const image = livePreviewImage(sourceUrl);
-    const template = templateUrl && slot.file_name !== "5.jpg" ? livePreviewImage(templateUrl) : null;
+    const template = templateUrl && platform !== "jd" ? livePreviewImage(templateUrl) : null;
     const phoneReference = platform === "jd" && slot.file_name === "5.jpg"
       ? livePreviewImage("/organizer-assets/iphone_reference.png")
       : null;
-    const logoReference = platform === "jd" && slot.file_name === "5.jpg"
+    const logoReference = platform === "jd" && /^[1-5]\.jpg$/.test(slot.file_name)
       ? livePreviewImage(`/organizer-assets/elle_logo_${logoColor}.png`)
       : null;
     const draw = () => {
@@ -1132,15 +1135,10 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         || draft.crop_y > 0.0001
         || draft.crop_width < 0.9999
         || draft.crop_height < 0.9999;
-      const automaticDetailCandidate = platform === "jd"
-        ? slot.file_name === "4.jpg"
-        : ["604.jpg", "605.jpg"].includes(slot.file_name);
+      const automaticDetailCandidate = platform !== "jd" && slot.file_name === "604.jpg";
       const usesAutomaticDetailCutout = automaticDetailCandidate
         && !hasManualCrop
         && livePreviewHasLightStudioBorder(sourceUrl, image);
-      if (usesAutomaticDetailCutout && platform === "jd") {
-        area = { x: 0.0875, y: 0.145, width: 0.825, height: 0.775, mode: "contain" };
-      }
       const usesProductCutout = (platform === "jd"
         ? ["2.jpg", "透明.png"].includes(slot.file_name)
         : ["2.jpg", "3.jpg", "30.png", "401.jpg", "606.jpg", "801.jpg"].includes(slot.file_name))
@@ -1167,9 +1165,7 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       const fitScale = area.mode === "cover" && !hasManualCrop && !usesAutomaticDetailCutout
         ? Math.max(areaWidth / sourceWidth, areaHeight / sourceHeight)
         : Math.min(areaWidth / sourceWidth, areaHeight / sourceHeight);
-      const automaticDetailScale = usesAutomaticDetailCutout
-        ? (platform === "jd" ? 0.9 : slot.file_name === "4.jpg" ? 1 : 0.82)
-        : 1;
+      const automaticDetailScale = usesAutomaticDetailCutout ? 0.82 : 1;
       const detailRatio = contentWidth / Math.max(1, contentHeight);
       const vipDetailOffset = detailRatio <= 0.78
         ? -0.105
@@ -1179,17 +1175,21 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       let drawX = areaX + (areaWidth - drawWidth) / 2 + draft.offset_x * areaWidth;
       const handleAware = (platform === "vip" && ["2.jpg", "3.jpg", "30.png"].includes(slot.file_name))
         || (platform === "jd" && slot.file_name === "2.jpg");
-      const handleLift = handleAware && productLayer && !hasManualCrop
-        ? liveHandleVisualLift(productLayer)
-        : 0;
+      const bodyCentered = (handleAware || (platform === "vip" && slot.file_name === "401.jpg"))
+        && productLayer
+        && !hasManualCrop;
       let drawY = areaY + (areaHeight - drawHeight) / 2 + draft.offset_y * areaHeight
-        + (usesAutomaticDetailCutout
-          ? (platform === "jd"
-            ? 0
-            : ["604.jpg", "605.jpg"].includes(slot.file_name) ? vipDetailOffset : slot.file_name === "4.jpg" ? -0.10 : -0.08) * areaHeight
-          : 0)
-        - handleLift * areaHeight * (usesAutomaticDetailCutout ? 0.04 : 0.065)
+        + (usesAutomaticDetailCutout ? vipDetailOffset * areaHeight : 0)
         - (platform === "vip" && ["2.jpg", "3.jpg", "30.png"].includes(slot.file_name) && !hasManualCrop ? 0.03 * areaHeight : 0);
+      if (bodyCentered) {
+        const body = liveInfoMeasurementBounds(productLayer);
+        const cropLeft = sourceX * drawSourceScaleX;
+        const cropTop = sourceY * drawSourceScaleY;
+        const cropWidth = sourceWidth * drawSourceScaleX;
+        const cropHeight = sourceHeight * drawSourceScaleY;
+        drawX += (cropLeft + cropWidth / 2 - (body.left + body.right) / 2) * drawWidth / Math.max(1, cropWidth);
+        drawY += (cropTop + cropHeight / 2 - (body.top + body.bottom) / 2) * drawHeight / Math.max(1, cropHeight);
+      }
       const editorArea = slotEditorSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
       const safeLeft = editorArea.x * output.width;
       const safeTop = editorArea.y * output.height;
@@ -1253,8 +1253,14 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         const baseFitScale = Math.min(areaWidth / Math.max(1, contentWidth), areaHeight / Math.max(1, contentHeight));
         const baseDrawWidth = contentWidth * baseFitScale;
         const baseDrawHeight = contentHeight * baseFitScale;
-        const baseDrawX = areaX + (areaWidth - baseDrawWidth) / 2;
-        const baseDrawY = areaY + (areaHeight - baseDrawHeight) / 2;
+        let baseDrawX = areaX + (areaWidth - baseDrawWidth) / 2;
+        let baseDrawY = areaY + (areaHeight - baseDrawHeight) / 2;
+        if (productLayer && !hasManualCrop) {
+          baseDrawX += (baseCropLeft + (baseCropRight - baseCropLeft) / 2 - (layerBounds.left + layerBounds.right) / 2)
+            * baseDrawWidth / Math.max(1, baseCropRight - baseCropLeft);
+          baseDrawY += (baseCropTop + (baseCropBottom - baseCropTop) / 2 - (layerBounds.top + layerBounds.bottom) / 2)
+            * baseDrawHeight / Math.max(1, baseCropBottom - baseCropTop);
+        }
         const baseMeasuredLeft = Math.max(baseCropLeft, layerBounds.left);
         const baseMeasuredTop = Math.max(baseCropTop, layerBounds.top);
         const baseMeasuredRight = Math.min(baseCropRight, layerBounds.right);
@@ -1326,6 +1332,11 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         context.restore();
       }
 
+      if (platform === "jd" && logoReference?.complete && logoReference.naturalWidth) {
+        const logoX = output.width === 750 && output.height === 1000 ? 56 : 32;
+        const logoY = output.width === 750 && output.height === 1000 ? 45 : 38;
+        context.drawImage(logoReference, logoX, logoY, 190, 60);
+      }
       drawAdjustmentGuide(context, output, slot, platform, sourceIndex, targetFolder);
     };
     image.addEventListener("load", draw);
@@ -1880,12 +1891,12 @@ function SlotAdjustmentEditor({
                 alt={`${slot.file_name} 精确成品预览`}
                 draggable={false}
               />}
-              {(previewSynced || holdExactPreview) && <SlotSafeAreaOverlay
+              <SlotSafeAreaOverlay
                 slot={slot}
                 platform={platform}
                 sourceIndex={sourceIndex}
                 targetFolder={targetFolder}
-              />}
+              />
               <span className="slot-preview-loading">
                 {busy ? <LoaderCircle className="spin" size={17} /> : <Move size={16} />}
                 {busy ? "正在生成精确模板" : previewSynced ? "精确成品预览" : "前端即时预览"}
