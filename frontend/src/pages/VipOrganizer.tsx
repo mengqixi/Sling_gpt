@@ -275,8 +275,11 @@ function slotPreviewLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex:
 }
 
 function slotSafeAreaLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex: number, targetFolder: PreviewFolder) {
+  if (platform === "jd" && slot.file_name === "2.jpg") {
+    return { x: 0.04, y: 0.04, width: 0.92, height: 0.92 };
+  }
   if (platform === "jd" && slot.file_name === "5.jpg") {
-    return { x: 0.04, y: 0.12, width: 0.92, height: 0.72 };
+    return { x: 0.04, y: 0.04, width: 0.92, height: 0.92 };
   }
   return slotPreviewLayout(slot, platform, sourceIndex, targetFolder);
 }
@@ -1004,19 +1007,20 @@ function drawJdComparisonPreview(
   productInfo: Record<string, string>
 ) {
   const layer = liveJdProductLayer(sourceUrl, image, draft);
-  const geometry = jdProductGeometry(output, layer, draft, productInfo);
+  const hasManualProductLayout = draft.crop_x > 0.0001
+    || draft.crop_y > 0.0001
+    || draft.crop_width < 0.9999
+    || draft.crop_height < 0.9999
+    || Math.abs(draft.zoom - 1) > 0.0001
+    || Math.abs(draft.offset_x) > 0.0001
+    || Math.abs(draft.offset_y) > 0.0001;
+  const geometry = jdProductGeometry(output, layer, draft, productInfo, !hasManualProductLayout);
   const baseGeometry = jdProductGeometry(output, layer, {
     ...draft,
     zoom: 1,
     offset_x: 0,
     offset_y: 0
   }, productInfo);
-  const phoneAnchorGeometry = jdProductGeometry(output, layer, {
-    ...draft,
-    zoom: 1,
-    offset_x: 0,
-    offset_y: 0
-  }, productInfo, false);
   context.fillStyle = "#f3f3f3";
   context.fillRect(0, 0, output.width, output.height);
   if (logoReference?.complete && logoReference.naturalWidth) {
@@ -1067,8 +1071,8 @@ function drawJdComparisonPreview(
       : height * 0.78;
     let left = output.width * 0.75 + offsetX * output.width * 0.18 - width / 2;
     let top = (draft.phone_alignment || "bottom") === "bottom"
-      ? phoneAnchorGeometry.body.bottom - height
-      : (phoneAnchorGeometry.body.top + phoneAnchorGeometry.body.bottom - height) / 2;
+      ? baseGeometry.body.bottom - height
+      : (baseGeometry.body.top + baseGeometry.body.bottom - height) / 2;
     top += offsetY * output.height * 0.18;
     left = Math.max(geometry.safe.left, Math.min(left, geometry.safe.right - width - phoneRightAllowance));
     top = Math.max(geometry.safe.top, Math.min(top, geometry.safe.bottom - height - phoneBottomAllowance));
@@ -1161,6 +1165,10 @@ function LiveSlotPreview({ sourceUrl, compositePrimaryUrl, templateUrl, slot, dr
         || draft.crop_y > 0.0001
         || draft.crop_width < 0.9999
         || draft.crop_height < 0.9999;
+      const hasManualLayout = hasManualCrop
+        || Math.abs(draft.zoom - 1) > 0.0001
+        || Math.abs(draft.offset_x) > 0.0001
+        || Math.abs(draft.offset_y) > 0.0001;
       const automaticInteriorDetail = (platform === "vip" && slot.file_name === "15.jpg")
         || (platform === "jd" && slot.file_name === "4.jpg");
       const automaticDetailCandidate = automaticInteriorDetail
@@ -1241,14 +1249,14 @@ function LiveSlotPreview({ sourceUrl, compositePrimaryUrl, templateUrl, slot, dr
       const safeBottom = (editorArea.y + editorArea.height) * output.height;
       if (drawWidth <= safeRight - safeLeft) drawX = Math.max(safeLeft, Math.min(drawX, safeRight - drawWidth));
       if (drawHeight <= safeBottom - safeTop) drawY = Math.max(safeTop, Math.min(drawY, safeBottom - drawHeight));
-      if (platform === "jd" && slot.file_name === "2.jpg") {
+      if (platform === "jd" && slot.file_name === "2.jpg" && !hasManualLayout) {
         const body = productLayer ? liveInfoMeasurementBounds(productLayer) : null;
         const isTallHandleBag = productLayer && body
           ? (body.right - body.left) / Math.max(1, body.bottom - body.top) <= 1.15
             && liveHandleVisualLift(productLayer) >= 0.55
           : false;
         const baseSafeTop = output.width === 800 && output.height === 800 ? 162 : 175;
-        const tallHandleSafeTop = output.width === 800 && output.height === 800 ? 190 : 195;
+        const tallHandleSafeTop = output.width === 800 && output.height === 800 ? 180 : 185;
         const minimumTop = isTallHandleBag ? tallHandleSafeTop : baseSafeTop;
         const maximumBottom = output.width === 800 && output.height === 800 ? 740 : 930;
         drawY = drawHeight <= maximumBottom - minimumTop

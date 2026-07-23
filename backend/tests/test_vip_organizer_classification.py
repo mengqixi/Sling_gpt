@@ -693,10 +693,19 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         with patch("backend.services.vip_organizer_service._load_image", return_value=tote):
             square = _render_slot_image("2.jpg", [1], {}, platform="jd", target_folder="800")
             portrait = _render_slot_image("2.jpg", [1], {}, platform="jd", target_folder="750")
+            raised = _render_slot_image(
+                "2.jpg",
+                [1],
+                {},
+                [{"offset_y": -0.2}],
+                platform="jd",
+                target_folder="800",
+            )
 
         self.assertIsNotNone(square)
         self.assertIsNotNone(portrait)
-        assert square is not None and portrait is not None
+        self.assertIsNotNone(raised)
+        assert square is not None and portrait is not None and raised is not None
 
         def product_top(image: Image.Image, left: int) -> int:
             crop = image.crop((left, 0, image.width, image.height))
@@ -707,10 +716,12 @@ class VipOrganizerClassificationTests(unittest.TestCase):
 
         square_top = product_top(square, 250)
         portrait_top = product_top(portrait, 260)
-        self.assertGreaterEqual(square_top, 190)
-        self.assertGreaterEqual(portrait_top, 195)
-        self.assertLessEqual(square_top, 205)
-        self.assertLessEqual(portrait_top, 210)
+        raised_top = product_top(raised, 250)
+        self.assertGreaterEqual(square_top, 180)
+        self.assertGreaterEqual(portrait_top, 185)
+        self.assertLessEqual(square_top, 195)
+        self.assertLessEqual(portrait_top, 200)
+        self.assertLess(raised_top, square_top - 50)
 
     def test_slot_map_links_the_two_model_output_sizes(self):
         mapped = _slot_map([

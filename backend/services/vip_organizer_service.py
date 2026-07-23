@@ -1767,8 +1767,9 @@ def _paste_product(
         ).copy()
     else:
         cutout = _product_cutout(_crop_source(source, adjustment))
-    effective_minimum_top = minimum_rendered_top
-    if tall_handle_minimum_rendered_top is not None:
+    has_manual_layout = _has_manual_layout_adjustment(adjustment)
+    effective_minimum_top = None if has_manual_layout else minimum_rendered_top
+    if not has_manual_layout and tall_handle_minimum_rendered_top is not None:
         body_left, body_top, body_right, body_bottom = _info_measurement_bbox(cutout)
         body_ratio = (body_right - body_left) / max(1, body_bottom - body_top)
         if body_ratio <= 1.15 and _handle_visual_lift(cutout) >= 0.55:
@@ -1804,7 +1805,7 @@ def _paste_product(
         layout_adjustment,
         clip_box=clip_box,
         minimum_top=effective_minimum_top,
-        maximum_bottom=maximum_rendered_bottom,
+        maximum_bottom=None if has_manual_layout else maximum_rendered_bottom,
     )
 
 
@@ -2459,9 +2460,9 @@ def _jd_product_page(
                 else 175
             ),
             tall_handle_minimum_rendered_top=(
-                190
+                180
                 if size == (800, 800)
-                else 195
+                else 185
             ),
             maximum_rendered_bottom=(
                 740
@@ -2818,16 +2819,16 @@ def _jd_size_comparison_page(
     normalized = _normalize_adjustment(adjustment)
     cutout = _product_cutout(_crop_source(source, adjustment))
     body_bbox = _jd_product_body_bbox(cutout)
-    layout = _jd_size_product_layout(cutout, body_bbox, size, product_info, adjustment)
-    base_layout = _jd_size_product_layout(cutout, body_bbox, size, product_info, None)
-    phone_anchor_layout = _jd_size_product_layout(
+    has_manual_product_layout = _has_manual_layout_adjustment(adjustment)
+    layout = _jd_size_product_layout(
         cutout,
         body_bbox,
         size,
         product_info,
-        None,
-        enforce_logo_clearance=False,
+        adjustment,
+        enforce_logo_clearance=not has_manual_product_layout,
     )
+    base_layout = _jd_size_product_layout(cutout, body_bbox, size, product_info, None)
     resized_width = layout["rendered_width"]
     resized_height = layout["rendered_height"]
     cutout = cutout.resize((resized_width, resized_height), Image.Resampling.LANCZOS)
@@ -2841,7 +2842,7 @@ def _jd_size_comparison_page(
     phone_height = round(JD_PHONE_HEIGHT_MM * rendered_pixels_per_mm * normalized["phone_scale"])
     phone_height = max(round(height * 0.095), min(round(height * 0.46), phone_height))
     phone_center_x = width * 0.75 + normalized["phone_offset_x"] * width * 0.18
-    phone_top = _jd_aligned_phone_top(phone_anchor_layout["body_box"], phone_height, normalized["phone_alignment"])
+    phone_top = _jd_aligned_phone_top(base_layout["body_box"], phone_height, normalized["phone_alignment"])
     phone_top += round(normalized["phone_offset_y"] * height * 0.18)
     reference = _jd_phone_reference_layer()
     phone_width = max(

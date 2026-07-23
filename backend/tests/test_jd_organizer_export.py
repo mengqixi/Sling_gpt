@@ -405,6 +405,61 @@ def test_jd_product_movement_does_not_move_the_phone():
     assert phone_positions[0] == phone_positions[1]
 
 
+def test_jd_manual_product_movement_can_cross_the_automatic_logo_clearance():
+    source = Image.new("RGBA", (300, 430), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(source)
+    draw.arc((70, 10, 230, 250), 180, 360, fill=(40, 40, 40, 255), width=12)
+    draw.rounded_rectangle((45, 145, 255, 410), radius=18, fill=(150, 160, 175, 255))
+    body_box = service._jd_product_body_bbox(source)
+    info = {"product_length": "20", "product_height": "14"}
+
+    automatic = service._jd_size_product_layout(source, body_box, (800, 800), info, None)
+    raised = service._jd_size_product_layout(
+        source,
+        body_box,
+        (800, 800),
+        info,
+        {"offset_y": -0.35},
+        enforce_logo_clearance=False,
+    )
+
+    assert raised["paste_y"] < automatic["paste_y"] - 40
+    assert raised["paste_y"] >= raised["safe_box"][1]
+
+
+def test_jd_phone_alignment_uses_the_same_automatic_product_baseline():
+    source = Image.new("RGBA", (300, 430), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(source)
+    draw.arc((70, 10, 230, 250), 180, 360, fill=(40, 40, 40, 255), width=12)
+    draw.rounded_rectangle((45, 145, 255, 410), radius=18, fill=(150, 160, 175, 255))
+    info = {"product_length": "20", "product_height": "14"}
+    cutout = service._product_cutout(source)
+    body_box = service._jd_product_body_bbox(cutout)
+    baseline = service._jd_size_product_layout(cutout, body_box, (800, 800), info, None)
+    phone_positions: list[tuple[int, int, int]] = []
+
+    def capture_phone(_canvas, center_x, top, height):
+        phone_positions.append((round(center_x), round(top), round(height)))
+        return round(center_x - 30), round(top), round(center_x + 30), round(top + height)
+
+    with patch.object(service, "_draw_jd_phone_reference", side_effect=capture_phone):
+        service._jd_size_comparison_page(source, (800, 800), info, {"phone_alignment": "bottom"})
+        service._jd_size_comparison_page(source, (800, 800), info, {"phone_alignment": "center"})
+
+    bottom_top = service._jd_aligned_phone_top(
+        baseline["body_box"],
+        phone_positions[0][2],
+        "bottom",
+    )
+    center_top = service._jd_aligned_phone_top(
+        baseline["body_box"],
+        phone_positions[1][2],
+        "center",
+    )
+    assert phone_positions[0][1] == bottom_top
+    assert phone_positions[1][1] == center_top
+
+
 def test_jd_size_rulers_stay_visible_when_adjusting_objects_only():
     source = Image.new("RGBA", (420, 320), (0, 0, 0, 0))
     draw = ImageDraw.Draw(source)
@@ -591,6 +646,12 @@ class JdOrganizerGeometryTests(unittest.TestCase):
 
     def test_product_movement_keeps_phone_fixed(self):
         test_jd_product_movement_does_not_move_the_phone()
+
+    def test_manual_product_movement_can_cross_automatic_logo_clearance(self):
+        test_jd_manual_product_movement_can_cross_the_automatic_logo_clearance()
+
+    def test_phone_alignment_uses_automatic_product_baseline(self):
+        test_jd_phone_alignment_uses_the_same_automatic_product_baseline()
 
     def test_jd_object_only_modes_keep_rulers_visible(self):
         test_jd_size_rulers_stay_visible_when_adjusting_objects_only()
