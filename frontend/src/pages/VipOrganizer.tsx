@@ -1173,12 +1173,15 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       let drawX = areaX + (areaWidth - drawWidth) / 2 + draft.offset_x * areaWidth;
       const handleAware = (platform === "vip" && ["2.jpg", "3.jpg", "30.png"].includes(slot.file_name))
         || (platform === "jd" && slot.file_name === "2.jpg");
+      const tallHandleDropAware = (platform === "vip" && ["2.jpg", "3.jpg", "30.png"].includes(slot.file_name))
+        || (platform === "jd" && slot.file_name === "2.jpg");
       const bodyCentered = (handleAware || (platform === "vip" && slot.file_name === "401.jpg"))
         && productLayer
         && !hasManualCrop;
       let drawY = areaY + (areaHeight - drawHeight) / 2 + draft.offset_y * areaHeight
         + (usesAutomaticDetailCutout ? vipDetailOffset * areaHeight : 0)
-        - (platform === "vip" && ["2.jpg", "3.jpg", "30.png"].includes(slot.file_name) && !hasManualCrop ? 0.03 * areaHeight : 0);
+        - (platform === "vip" && ["2.jpg", "3.jpg", "30.png"].includes(slot.file_name) && !hasManualCrop ? 0.03 * areaHeight : 0)
+        + (tallHandleDropAware && productLayer && !hasManualCrop ? 0.12 * liveHandleVisualLift(productLayer) * areaHeight : 0);
       if (bodyCentered) {
         const body = liveInfoMeasurementBounds(productLayer);
         const cropLeft = sourceX * drawSourceScaleX;
@@ -1559,6 +1562,21 @@ function SlotAdjustmentEditor({
     });
   }
 
+  function changePhoneAlignment(nextAlignment: "center" | "bottom") {
+    if (draftRef.current.phone_alignment === nextAlignment) return;
+    cancelStalePreview();
+    const nextDraft = { ...draftRef.current, phone_alignment: nextAlignment };
+    draftVersionRef.current += 1;
+    const nextVersion = draftVersionRef.current;
+    draftRef.current = nextDraft;
+    setDraft(nextDraft);
+    setHoldExactPreview(Boolean(renderedPreviewRef.current));
+    setPreviewSynced(false);
+    void refreshPreview(nextDraft, nextVersion).finally(() => {
+      if (draftVersionRef.current === nextVersion) setHoldExactPreview(false);
+    });
+  }
+
   async function refreshPreview(
     nextDraft: ImageAdjustment = draftRef.current,
     version = draftVersionRef.current
@@ -1920,8 +1938,8 @@ function SlotAdjustmentEditor({
                 if (draftRef.current.phone_show_ruler !== false) applyDraft({ ...draftRef.current, phone_show_ruler: false });
               }}>手机高标线</button>
               <span>对齐</span>
-              <button type="button" className={(draft.phone_alignment || "center") === "center" ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_alignment: "center" })}>中心同高</button>
-              <button type="button" className={draft.phone_alignment === "bottom" ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_alignment: "bottom" })}>底部齐平</button>
+              <button type="button" className={draft.phone_alignment === "center" ? "active-tool" : ""} onClick={() => changePhoneAlignment("center")}>中心同高</button>
+              <button type="button" className={(draft.phone_alignment || "bottom") === "bottom" ? "active-tool" : ""} onClick={() => changePhoneAlignment("bottom")}>底部齐平</button>
             </> : isInfoPage ? <>
               <button type="button" className={infoMoveTarget === "product" ? "active-tool" : ""} onClick={() => {
                 setInfoMoveTarget("product");
@@ -2026,7 +2044,9 @@ export default function VipOrganizer() {
   const [message, setMessage] = useState("");
   const [slotPreviews, setSlotPreviews] = useState<Record<string, string>>({});
   const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewRetryVersion, setPreviewRetryVersion] = useState(0);
   const [platformSwitching, setPlatformSwitching] = useState(false);
+  const [platformRegenerating, setPlatformRegenerating] = useState(false);
   const [adjustmentEditor, setAdjustmentEditor] = useState<{
     fileName: string;
     sourceIndex: number;
@@ -2072,7 +2092,7 @@ export default function VipOrganizer() {
   }
 
   useEffect(() => {
-    if (platformSwitching) return;
+    if (platformSwitching || platformRegenerating) return;
     if (!sessionId || !slots.length) {
       previewAbortRef.current?.abort();
       setSlotPreviews({});
@@ -2208,12 +2228,13 @@ export default function VipOrganizer() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [sessionId, slots, info, platform, platformSwitching]);
+  }, [sessionId, slots, info, platform, platformSwitching, platformRegenerating, previewRetryVersion]);
 
   useEffect(() => {
     if (
       platform !== "vip"
       || platformSwitching
+      || platformRegenerating
       || previewBusy
       || !sessionId
       || !slots.length
@@ -2271,7 +2292,7 @@ export default function VipOrganizer() {
       }
     }, 450);
     return () => window.clearTimeout(timer);
-  }, [platform, platformSwitching, previewBusy, sessionId, slots, slotPreviews, info]);
+  }, [platform, platformSwitching, platformRegenerating, previewBusy, sessionId, slots, slotPreviews, info]);
 
   useEffect(() => {
     api.getApiConfigs("text_analysis")
@@ -2821,6 +2842,38 @@ export default function VipOrganizer() {
     }
   }
 
+  async function regenerateCurrentPlatform() {
+    if (!productsRef.current.length) {
+      setMessage("请先上传商品原图");
+      return;
+    }
+    if (reanalyzeTimerRef.current !== null) {
+      window.clearTimeout(reanalyzeTimerRef.current);
+      reanalyzeTimerRef.current = null;
+    }
+    previewAbortRef.current?.abort();
+    previewRequestRef.current += 1;
+    setPlatformRegenerating(true);
+    setAdjustmentEditor(null);
+    setSlotPreviews({});
+    slotPreviewSignaturesRef.current = {};
+    delete platformWorkspaceRef.current[platform];
+    setMessage(`正在清空并重新生成${platform === "jd" ? "京东" : "唯品会"}套图……`);
+    try {
+      await analyze(
+        assetRolesRef.current,
+        platform,
+        assetTagsRef.current,
+        undefined,
+        undefined,
+        true,
+        true
+      );
+    } finally {
+      setPlatformRegenerating(false);
+    }
+  }
+
   const activeEditorSlot = adjustmentEditor
     ? slots.find((slot) => slot.file_name === adjustmentEditor.fileName)
     : undefined;
@@ -2951,23 +3004,35 @@ export default function VipOrganizer() {
         <section className="panel organizer-slots-panel">
           <div className="organizer-platform-switcher" aria-label="输出平台">
             <div><strong>输出平台</strong></div>
-            <div className="organizer-platform-tabs" role="tablist" aria-label="选择输出平台">
-              {ORGANIZER_PLATFORMS.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={item.id === platform}
-                  className={item.id === platform ? "active" : ""}
-                  disabled={busy || platformSwitching}
-                  onClick={() => changePlatform(item.id)}
-                >
-                  <span>{item.label}</span>
-                </button>
-              ))}
+            <div className="organizer-platform-actions">
+              <div className="organizer-platform-tabs" role="tablist" aria-label="选择输出平台">
+                {ORGANIZER_PLATFORMS.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={item.id === platform}
+                    className={item.id === platform ? "active" : ""}
+                    disabled={busy || platformSwitching || platformRegenerating}
+                    onClick={() => changePlatform(item.id)}
+                  >
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="organizer-platform-refresh"
+                disabled={busy || platformSwitching || platformRegenerating || !products.length}
+                title="清空当前平台的手动选图和调整，按最新标签重新自动生成"
+                onClick={() => void regenerateCurrentPlatform()}
+              >
+                {platformRegenerating ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}
+                {platformRegenerating ? "正在重新生成" : "刷新当前平台"}
+              </button>
             </div>
           </div>
-          <div className="section-title-row"><h2>4. 检查{platform === "jd" ? "京东7个输出位置" : "15个输出位置"}</h2>{(previewBusy || platformSwitching) && <span className="organizer-preview-status"><LoaderCircle className="spin" size={16} />{platformSwitching ? "正在切换输出平台" : "正在更新成品预览"}</span>}</div>
+          <div className="section-title-row"><h2>4. 检查{platform === "jd" ? "京东7个输出位置" : "15个输出位置"}</h2>{(previewBusy || platformSwitching || platformRegenerating) && <span className="organizer-preview-status"><LoaderCircle className="spin" size={16} />{platformSwitching ? "正在切换输出平台" : platformRegenerating ? "正在重新生成当前平台" : "正在更新成品预览"}</span>}</div>
           <div className="organizer-preview-groups">
             {previewGroups.map((group) => <section className="organizer-preview-group" key={group.folder}>
               {group.label && <header className="organizer-preview-group-header">
@@ -2999,6 +3064,7 @@ export default function VipOrganizer() {
                               return next;
                             });
                             delete slotPreviewSignaturesRef.current[previewKey];
+                            setPreviewRetryVersion((current) => current + 1);
                           }} /></button>
                         : <div className="generated-placeholder"><FileImage size={30} /><span>{!outputReady ? "请先填写商品长和高" : previewBusy ? "正在套用模板" : "缺少素材"}</span></div>}
                     </div>

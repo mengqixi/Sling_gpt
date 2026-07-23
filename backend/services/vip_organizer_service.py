@@ -1742,6 +1742,7 @@ def _paste_product(
     *,
     clip_box: tuple[int, int, int, int] | None = None,
     auto_handle_layout: bool = False,
+    auto_tall_handle_drop: bool = False,
     auto_offset_y: float = 0.0,
 ) -> None:
     image_id = source.info.get("_organizer_image_id")
@@ -1764,10 +1765,16 @@ def _paste_product(
         body_left, body_top, body_right, body_bottom = _info_measurement_bbox(cutout)
         body_center_x = (body_left + body_right) / 2
         body_center_y = (body_top + body_bottom) / 2
+        tall_handle_drop_y = 0.12 * _handle_visual_lift(cutout) if auto_tall_handle_drop else 0.0
         layout_adjustment = {
             **normalized,
             "offset_x": normalized["offset_x"] + (cutout.width / 2 - body_center_x) * scale / box_width,
-            "offset_y": normalized["offset_y"] + auto_offset_y + (cutout.height / 2 - body_center_y) * scale / box_height,
+            "offset_y": (
+                normalized["offset_y"]
+                + auto_offset_y
+                + tall_handle_drop_y
+                + (cutout.height / 2 - body_center_y) * scale / box_height
+            ),
         }
     _paste_layer(canvas, cutout, box, layout_adjustment, clip_box=clip_box)
 
@@ -2022,6 +2029,7 @@ def _normalized_product_page(
     transparent: bool = False,
     adjustment: dict[str, Any] | None = None,
     auto_handle_layout: bool = False,
+    auto_tall_handle_drop: bool = False,
     auto_offset_y: float = 0.0,
     manual_padding_ratio: float | None = None,
 ) -> Image.Image:
@@ -2047,6 +2055,7 @@ def _normalized_product_page(
         adjustment,
         clip_box=clip_box,
         auto_handle_layout=auto_handle_layout,
+        auto_tall_handle_drop=auto_tall_handle_drop,
         auto_offset_y=auto_offset_y,
     )
     return canvas
@@ -2058,6 +2067,7 @@ def _catalog_product_page(source: Image.Image, adjustment: dict[str, Any] | None
         source,
         adjustment=adjustment,
         auto_handle_layout=True,
+        auto_tall_handle_drop=True,
         auto_offset_y=-0.03,
     )
 
@@ -2372,7 +2382,15 @@ def _jd_product_page(
         else:
             box = (100, 145, 650, 900)
         clip_box = _expanded_safe_box(box, size, padding_ratio=0.18)
-        _paste_product(canvas, source, box, adjustment, clip_box=clip_box, auto_handle_layout=True)
+        _paste_product(
+            canvas,
+            source,
+            box,
+            adjustment,
+            clip_box=clip_box,
+            auto_handle_layout=True,
+            auto_tall_handle_drop=True,
+        )
     _draw_jd_elle_logo(canvas, size, logo_color)
     return canvas
 
@@ -2935,6 +2953,7 @@ def _render_slot_image(
             transparent=True,
             adjustment=adjustment,
             auto_handle_layout=True,
+            auto_tall_handle_drop=True,
             auto_offset_y=-0.03,
             manual_padding_ratio=0.18,
         )

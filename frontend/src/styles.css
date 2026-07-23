@@ -114,11 +114,14 @@
 .organizer-platform-switcher > div:first-child { display: grid; gap: 3px; }
 .organizer-platform-switcher strong { color: #173f35; font-size: 15px; }
 .organizer-platform-switcher > div:first-child span { color: #66736e; font-size: 13px; }
+.organizer-platform-actions { display: grid; gap: 8px; }
 .organizer-platform-tabs { display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid #d2ddd8; border-radius: 5px; background: #fff; }
 .organizer-platform-tabs button { min-width: 104px; height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 0; border-radius: 4px; background: transparent; color: #52615c; }
 .organizer-platform-tabs button.active { background: #1f5a4b; color: #fff; font-weight: 700; }
 .organizer-platform-tabs button:disabled { cursor: not-allowed; color: #83908b; opacity: 1; }
 .organizer-platform-tabs button small { padding: 2px 5px; border: 1px solid #d6dfdb; border-radius: 3px; color: #78847f; font-size: 11px; line-height: 1; }
+.organizer-platform-refresh { width: 100%; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-color: #b9cec5; background: #fff; color: #1f5a4b; }
+.organizer-platform-refresh:hover:not(:disabled) { border-color: #1f5a4b; background: #edf5f1; }
 .organizer-preview-groups { display: grid; gap: 24px; }
 .organizer-preview-group { display: grid; gap: 12px; }
 .organizer-preview-group + .organizer-preview-group { padding-top: 20px; border-top: 1px solid #dfe5e2; }

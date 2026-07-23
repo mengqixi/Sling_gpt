@@ -248,8 +248,18 @@ def test_handle_visual_lift_scales_with_handle_height():
     no_handle = service._handle_visual_lift(handbag(None))
     low_handle = service._handle_visual_lift(handbag(145))
     high_handle = service._handle_visual_lift(handbag(20))
+    hobo = Image.new("RGBA", (520, 420), (0, 0, 0, 0))
+    hobo_mask = Image.new("L", hobo.size, 0)
+    hobo_draw = ImageDraw.Draw(hobo_mask)
+    hobo_draw.polygon(
+        [(25, 75), (95, 18), (170, 120), (260, 165), (350, 120), (425, 18), (495, 75), (470, 385), (50, 385)],
+        fill=255,
+    )
+    hobo_draw.ellipse((125, -35, 395, 180), fill=0)
+    hobo.paste((70, 80, 90, 255), mask=hobo_mask)
 
     assert no_handle == 0
+    assert service._handle_visual_lift(hobo) == 0
     assert 0 <= low_handle < high_handle
     assert high_handle > 0.5
 

@@ -68,6 +68,42 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         self.assertAlmostEqual((foreground[0] + foreground[2]) / 2, 400, delta=2)
         self.assertAlmostEqual((foreground[1] + foreground[3]) / 2, 424, delta=2)
 
+    def test_catalog_tall_handle_drop_is_opt_in(self):
+        tote = Image.new("RGBA", (440, 440), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(tote)
+        draw.arc((120, 20, 320, 285), 180, 360, fill=(30, 30, 30, 255), width=24)
+        draw.rectangle((45, 180, 395, 410), fill=(70, 70, 70, 255))
+        white = Image.new("RGB", (800, 800), "white")
+
+        unchanged = _normalized_product_page(
+            tote,
+            auto_handle_layout=True,
+            auto_offset_y=-0.03,
+        )
+        catalog = _catalog_product_page(tote)
+        unchanged_bbox = ImageChops.difference(unchanged, white).getbbox()
+        catalog_bbox = ImageChops.difference(catalog, white).getbbox()
+
+        self.assertIsNotNone(unchanged_bbox)
+        self.assertIsNotNone(catalog_bbox)
+        assert unchanged_bbox is not None and catalog_bbox is not None
+        self.assertEqual(unchanged_bbox[0], catalog_bbox[0])
+        self.assertEqual(unchanged_bbox[2], catalog_bbox[2])
+        self.assertAlmostEqual(catalog_bbox[1] - unchanged_bbox[1], 65, delta=2)
+        self.assertAlmostEqual(catalog_bbox[3] - unchanged_bbox[3], 65, delta=2)
+        with patch("backend.services.vip_organizer_service._load_image", return_value=tote):
+            transparent = _render_slot_image("30.png", [1], {})
+        self.assertIsNotNone(transparent)
+        assert transparent is not None
+        transparent_bbox = transparent.getchannel("A").getbbox()
+        self.assertIsNotNone(transparent_bbox)
+        assert transparent_bbox is not None
+        self.assertAlmostEqual(
+            (transparent_bbox[1] + transparent_bbox[3]) / 2,
+            (catalog_bbox[1] + catalog_bbox[3]) / 2,
+            delta=2,
+        )
+
     def test_detail_shape_offset_moves_tall_details_lower_than_wide_details(self):
         self.assertEqual(_detail_shape_offset_y(Image.new("RGBA", (60, 120))), -0.105)
         self.assertEqual(_detail_shape_offset_y(Image.new("RGBA", (120, 120))), -0.11)
