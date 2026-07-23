@@ -100,6 +100,17 @@ def test_jd_logo_color_is_stored_per_output_slot():
     assert slot_map["2.jpg"]["logo_color"] == "black"
 
 
+def test_jd_logo_detail_fills_the_canvas_without_white_border():
+    source = Image.new("RGB", (800, 800), (181, 34, 38))
+    with patch.object(service, "_load_image", return_value=source):
+        rendered = service._render_jd_slot_image("3.jpg", [1], {}, [])
+
+    assert rendered is not None
+    assert rendered.size == (800, 800)
+    assert rendered.getpixel((2, 400)) == (181, 34, 38)
+    assert rendered.getpixel((797, 400)) == (181, 34, 38)
+
+
 def test_jd_single_model_preview_does_not_create_vip_model_slot():
     slot_map = service._slot_map(
         [{"file_name": "1.jpg", "image_ids": [7], "adjustments": [], "logo_color": "white"}],
@@ -370,6 +381,30 @@ def test_jd_size_rulers_stay_visible_when_adjusting_objects_only():
     assert not np.array_equal(np.asarray(objects_only), np.asarray(moved_phone_only))
 
 
+def test_independent_ruler_adjustments_are_normalized_and_transformed():
+    normalized = service._normalize_adjustment({
+        "length_ruler_scale": 9,
+        "height_ruler_offset_x": -9,
+        "phone_ruler_offset_y": 0.25,
+    })
+
+    assert normalized["length_ruler_scale"] == 2.0
+    assert normalized["height_ruler_offset_x"] == -1.5
+    assert normalized["phone_ruler_offset_y"] == 0.25
+
+    start, end = service._transform_ruler_segment(
+        (100, 200),
+        (300, 200),
+        scale=1.25,
+        offset_x=0.1,
+        offset_y=-0.2,
+        canvas_size=(800, 800),
+    )
+
+    assert start == (89, 171)
+    assert end == (339, 171)
+
+
 def test_product_cutout_removes_connected_light_gradient_without_losing_white_bag():
     source = Image.new("RGB", (500, 500), "white")
     pixels = np.asarray(source).copy()
@@ -499,6 +534,9 @@ class JdOrganizerGeometryTests(unittest.TestCase):
 
     def test_jd_object_only_modes_keep_rulers_visible(self):
         test_jd_size_rulers_stay_visible_when_adjusting_objects_only()
+
+    def test_independent_ruler_adjustments(self):
+        test_independent_ruler_adjustments_are_normalized_and_transformed()
 
     def test_phone_comparison_dimension_gate(self):
         test_jd_phone_comparison_waits_for_length_and_height()

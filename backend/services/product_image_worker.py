@@ -827,7 +827,7 @@ def recover_interrupted_calls() -> int:
             conn.execute(
                 """
                 UPDATE product_image_tasks
-                SET generation_active = 0, status = 'paused_failed', error_message = ?,
+                SET generation_active = 0, status = ?, error_message = ?,
                     last_activity_at = ?, updated_at = ? WHERE id = ?
                 """,
                 (

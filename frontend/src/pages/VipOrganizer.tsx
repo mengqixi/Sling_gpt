@@ -40,14 +40,23 @@ type ImageAdjustment = {
   phone_alignment?: "center" | "bottom";
   product_show_ruler?: boolean;
   phone_show_ruler?: boolean;
+  length_ruler_scale?: number;
+  length_ruler_offset_x?: number;
+  length_ruler_offset_y?: number;
+  height_ruler_scale?: number;
+  height_ruler_offset_x?: number;
+  height_ruler_offset_y?: number;
   width_ruler_scale?: number;
   width_ruler_offset_x?: number;
   width_ruler_offset_y?: number;
+  phone_ruler_scale?: number;
+  phone_ruler_offset_x?: number;
+  phone_ruler_offset_y?: number;
 };
 
 type CropSelection = { left: number; top: number; width: number; height: number };
-type AdjustmentTarget = "product" | "phone" | "width_ruler";
-type InfoMoveTarget = "product" | "product_rulers" | "width_ruler";
+type AdjustmentTarget = "product" | "phone" | "length_ruler" | "height_ruler" | "width_ruler" | "phone_ruler";
+type InfoMoveTarget = "product" | "product_rulers" | "length_ruler" | "height_ruler" | "width_ruler";
 
 type ApiRoleNote = {
   role: string;
@@ -106,13 +115,58 @@ const DEFAULT_ADJUSTMENT: ImageAdjustment = {
   phone_alignment: "bottom",
   product_show_ruler: true,
   phone_show_ruler: true,
+  length_ruler_scale: 1,
+  length_ruler_offset_x: 0,
+  length_ruler_offset_y: 0,
+  height_ruler_scale: 1,
+  height_ruler_offset_x: 0,
+  height_ruler_offset_y: 0,
   width_ruler_scale: 1,
   width_ruler_offset_x: 0,
-  width_ruler_offset_y: 0
+  width_ruler_offset_y: 0,
+  phone_ruler_scale: 1,
+  phone_ruler_offset_x: 0,
+  phone_ruler_offset_y: 0
 };
 
 function normalizeAdjustment(value?: Partial<ImageAdjustment>): ImageAdjustment {
   return { ...DEFAULT_ADJUSTMENT, ...(value || {}) };
+}
+
+function targetScale(draft: ImageAdjustment, target: AdjustmentTarget) {
+  if (target === "phone") return draft.phone_scale || 1;
+  if (target === "length_ruler") return draft.length_ruler_scale || 1;
+  if (target === "height_ruler") return draft.height_ruler_scale || 1;
+  if (target === "width_ruler") return draft.width_ruler_scale || 1;
+  if (target === "phone_ruler") return draft.phone_ruler_scale || 1;
+  return draft.zoom;
+}
+
+function targetOffset(draft: ImageAdjustment, target: AdjustmentTarget) {
+  if (target === "phone") return { x: draft.phone_offset_x || 0, y: draft.phone_offset_y || 0 };
+  if (target === "length_ruler") return { x: draft.length_ruler_offset_x || 0, y: draft.length_ruler_offset_y || 0 };
+  if (target === "height_ruler") return { x: draft.height_ruler_offset_x || 0, y: draft.height_ruler_offset_y || 0 };
+  if (target === "width_ruler") return { x: draft.width_ruler_offset_x || 0, y: draft.width_ruler_offset_y || 0 };
+  if (target === "phone_ruler") return { x: draft.phone_ruler_offset_x || 0, y: draft.phone_ruler_offset_y || 0 };
+  return { x: draft.offset_x, y: draft.offset_y };
+}
+
+function withTargetScale(draft: ImageAdjustment, target: AdjustmentTarget, scale: number): ImageAdjustment {
+  if (target === "phone") return { ...draft, phone_scale: scale };
+  if (target === "length_ruler") return { ...draft, length_ruler_scale: scale };
+  if (target === "height_ruler") return { ...draft, height_ruler_scale: scale };
+  if (target === "width_ruler") return { ...draft, width_ruler_scale: scale };
+  if (target === "phone_ruler") return { ...draft, phone_ruler_scale: scale };
+  return { ...draft, zoom: scale };
+}
+
+function withTargetOffset(draft: ImageAdjustment, target: AdjustmentTarget, x: number, y: number): ImageAdjustment {
+  if (target === "phone") return { ...draft, phone_offset_x: x, phone_offset_y: y };
+  if (target === "length_ruler") return { ...draft, length_ruler_offset_x: x, length_ruler_offset_y: y };
+  if (target === "height_ruler") return { ...draft, height_ruler_offset_x: x, height_ruler_offset_y: y };
+  if (target === "width_ruler") return { ...draft, width_ruler_offset_x: x, width_ruler_offset_y: y };
+  if (target === "phone_ruler") return { ...draft, phone_ruler_offset_x: x, phone_ruler_offset_y: y };
+  return { ...draft, offset_x: x, offset_y: y };
 }
 
 function isManuallyConfirmedSlot(slot: Slot) {
@@ -179,7 +233,10 @@ function slotPreviewLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex:
         ? { x: 0.08, y: 0.16, width: 0.43, height: 0.58, mode: "contain" as const }
         : { x: 0.08, y: 0.16, width: 0.43, height: 0.58, mode: "contain" as const };
     }
-    if (["3.jpg", "4.jpg"].includes(slot.file_name)) {
+    if (slot.file_name === "3.jpg") {
+      return { x: 0, y: 0, width: 1, height: 1, mode: "cover" as const };
+    }
+    if (slot.file_name === "4.jpg") {
       return { x: 0.0875, y: 0.145, width: 0.825, height: 0.775, mode: "cover" as const };
     }
     return { x: 0.15, y: 0.2125, width: 0.7, height: 0.675, mode: "contain" as const };
@@ -200,7 +257,7 @@ function slotPreviewLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex:
     return positions[sourceIndex] || positions[0];
   }
   if (slot.file_name === "4.jpg") {
-    return { x: 0.09, y: 0.09, width: 0.82, height: 0.82, mode: "contain" as const };
+    return { x: 0, y: 0, width: 1, height: 1, mode: "cover" as const };
   }
   if (slot.file_name === "15.jpg") {
     return { x: 0, y: 0, width: 1, height: 1, mode: "contain" as const };
@@ -675,8 +732,25 @@ function infoRulerGeometry(body: PixelBounds) {
     top,
     bottom,
     verticalX: Math.max(285, left - Math.max(34, Math.round(width * 0.205))),
-    horizontalY: Math.min(535, bottom + Math.max(24, Math.round(lineHeight * 0.175)))
+    horizontalY: Math.min(535, bottom + Math.max(34, Math.round(lineHeight * 0.19)))
   };
+}
+
+function transformCanvasRulerSegment(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  scale: number,
+  offsetX: number,
+  offsetY: number,
+  output: { width: number; height: number }
+) {
+  const center = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+  const move = { x: offsetX * output.width * 0.18, y: offsetY * output.height * 0.18 };
+  const transform = (point: { x: number; y: number }) => ({
+    x: center.x + (point.x - center.x) * scale + move.x,
+    y: center.y + (point.y - center.y) * scale + move.y
+  });
+  return { start: transform(start), end: transform(end) };
 }
 
 function infoWidthRulerGeometry(baseBody: PixelBounds, draft: ImageAdjustment) {
@@ -759,7 +833,7 @@ function liveJdProductLayer(url: string, image: HTMLImageElement, draft: ImageAd
     canvas.width,
     canvas.height
   );
-  const layer = { canvas, body: liveProductBodyBounds(canvas) };
+  const layer = { canvas, body: liveInfoMeasurementBounds(canvas) };
   liveJdProductLayerCache.set(key, layer);
   return layer;
 }
@@ -936,12 +1010,28 @@ function drawJdComparisonPreview(
   const productRulerBody = draft.product_show_ruler !== false ? geometry.body : baseGeometry.body;
   const horizontalY = Math.min(output.height - 58, productRulerBody.bottom + rulerGap);
   const verticalX = Math.max(output.width * 0.04, productRulerBody.left - rulerGap);
-  drawCanvasRuler(context, { x: productRulerBody.left, y: horizontalY }, { x: productRulerBody.right, y: horizontalY }, lengthLabel, output);
-  drawCanvasRuler(context, { x: verticalX, y: productRulerBody.top }, { x: verticalX, y: productRulerBody.bottom }, heightLabel, output, true);
+  const lengthRuler = transformCanvasRulerSegment(
+    { x: productRulerBody.left, y: horizontalY },
+    { x: productRulerBody.right, y: horizontalY },
+    draft.length_ruler_scale || 1,
+    draft.length_ruler_offset_x || 0,
+    draft.length_ruler_offset_y || 0,
+    output
+  );
+  const heightRuler = transformCanvasRulerSegment(
+    { x: verticalX, y: productRulerBody.top },
+    { x: verticalX, y: productRulerBody.bottom },
+    draft.height_ruler_scale || 1,
+    draft.height_ruler_offset_x || 0,
+    draft.height_ruler_offset_y || 0,
+    output
+  );
+  drawCanvasRuler(context, lengthRuler.start, lengthRuler.end, lengthLabel, output);
+  drawCanvasRuler(context, heightRuler.start, heightRuler.end, heightLabel, output, true);
 
-  const phoneRulerGap = Math.max(38, output.width * 0.075);
+  const phoneRulerGap = Math.max(22, output.width * 0.035);
   const phoneLabelClearance = Math.max(40, output.width * 0.05);
-  const phoneRightAllowance = phoneRulerGap + phoneLabelClearance;
+  const phoneRightAllowance = draft.phone_show_ruler !== false ? phoneRulerGap + phoneLabelClearance : 8;
   const phoneBottomAllowance = Math.max(28, output.height * 0.055);
   const placePhone = (scale: number, offsetX: number, offsetY: number) => {
     const height = Math.max(
@@ -965,11 +1055,19 @@ function drawJdComparisonPreview(
     context.drawImage(phoneReference, phone.left, phone.top, phone.width, phone.height);
   }
   const phoneRuler = draft.phone_show_ruler !== false ? phone : placePhone(1, 0, 0);
-  const phoneRulerX = Math.min(geometry.safe.right - phoneLabelClearance, phoneRuler.left + phoneRuler.width + phoneRulerGap);
-  drawCanvasRuler(
-    context,
+  const phoneRulerX = Math.min(geometry.safe.right - 12, phoneRuler.left + phoneRuler.width + phoneRulerGap);
+  const phoneRulerSegment = transformCanvasRulerSegment(
     { x: phoneRulerX, y: phoneRuler.top },
     { x: phoneRulerX, y: phoneRuler.top + phoneRuler.height },
+    draft.phone_ruler_scale || 1,
+    draft.phone_ruler_offset_x || 0,
+    draft.phone_ruler_offset_y || 0,
+    output
+  );
+  drawCanvasRuler(
+    context,
+    phoneRulerSegment.start,
+    phoneRulerSegment.end,
     "163mm",
     output,
     true,
@@ -979,7 +1077,7 @@ function drawJdComparisonPreview(
   context.fillStyle = "#666";
   context.font = `500 ${Math.max(12, Math.round(output.width * 0.017))}px sans-serif`;
   context.textAlign = "center";
-  context.fillText("iPhone 17 Pro Max", phoneRuler.left + phoneRuler.width / 2, phoneRuler.top + phoneRuler.height + 22);
+  context.fillText("iPhone 17 Pro Max", phone.left + phone.width / 2, phone.top + phone.height + 22);
   context.restore();
 }
 
@@ -1035,8 +1133,8 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         || draft.crop_width < 0.9999
         || draft.crop_height < 0.9999;
       const automaticDetailCandidate = platform === "jd"
-        ? ["3.jpg", "4.jpg"].includes(slot.file_name)
-        : ["4.jpg", "604.jpg", "605.jpg"].includes(slot.file_name);
+        ? slot.file_name === "4.jpg"
+        : ["604.jpg", "605.jpg"].includes(slot.file_name);
       const usesAutomaticDetailCutout = automaticDetailCandidate
         && !hasManualCrop
         && livePreviewHasLightStudioBorder(sourceUrl, image);
@@ -1072,21 +1170,26 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
       const automaticDetailScale = usesAutomaticDetailCutout
         ? (platform === "jd" ? 0.9 : slot.file_name === "4.jpg" ? 1 : 0.82)
         : 1;
+      const detailRatio = contentWidth / Math.max(1, contentHeight);
+      const vipDetailOffset = detailRatio <= 0.78
+        ? -0.105
+        : detailRatio <= 1.05 ? -0.11 : detailRatio <= 1.45 ? -0.12 : -0.13;
       const drawWidth = sourceWidth * fitScale * draft.zoom * automaticDetailScale;
       const drawHeight = sourceHeight * fitScale * draft.zoom * automaticDetailScale;
       let drawX = areaX + (areaWidth - drawWidth) / 2 + draft.offset_x * areaWidth;
-      const handleAware = (platform === "vip" && ["2.jpg", "3.jpg"].includes(slot.file_name))
-        || (platform === "jd" && ["2.jpg", "3.jpg"].includes(slot.file_name));
+      const handleAware = (platform === "vip" && ["2.jpg", "3.jpg", "30.png"].includes(slot.file_name))
+        || (platform === "jd" && slot.file_name === "2.jpg");
       const handleLift = handleAware && productLayer && !hasManualCrop
         ? liveHandleVisualLift(productLayer)
         : 0;
       let drawY = areaY + (areaHeight - drawHeight) / 2 + draft.offset_y * areaHeight
         + (usesAutomaticDetailCutout
           ? (platform === "jd"
-            ? -0.055
-            : ["604.jpg", "605.jpg"].includes(slot.file_name) ? -0.11 : slot.file_name === "4.jpg" ? -0.10 : -0.08) * areaHeight
+            ? 0
+            : ["604.jpg", "605.jpg"].includes(slot.file_name) ? vipDetailOffset : slot.file_name === "4.jpg" ? -0.10 : -0.08) * areaHeight
           : 0)
-        - handleLift * areaHeight * (usesAutomaticDetailCutout ? 0.04 : 0.065);
+        - handleLift * areaHeight * (usesAutomaticDetailCutout ? 0.04 : 0.065)
+        - (platform === "vip" && ["2.jpg", "3.jpg", "30.png"].includes(slot.file_name) && !hasManualCrop ? 0.03 * areaHeight : 0);
       const editorArea = slotEditorSafeAreaLayout(slot, platform, sourceIndex, targetFolder);
       const safeLeft = editorArea.x * output.width;
       const safeTop = editorArea.y * output.height;
@@ -1165,6 +1268,22 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         const linkedRulers = draft.product_show_ruler !== false;
         const ruler = infoRulerGeometry(linkedRulers ? adjustedBody : baseBody);
         const widthRuler = infoWidthRulerGeometry(baseBody, draft);
+        const lengthRuler = transformCanvasRulerSegment(
+          { x: ruler.left, y: ruler.horizontalY },
+          { x: ruler.right, y: ruler.horizontalY },
+          draft.length_ruler_scale || 1,
+          draft.length_ruler_offset_x || 0,
+          draft.length_ruler_offset_y || 0,
+          output
+        );
+        const heightRuler = transformCanvasRulerSegment(
+          { x: ruler.verticalX, y: ruler.top },
+          { x: ruler.verticalX, y: ruler.bottom },
+          draft.height_ruler_scale || 1,
+          draft.height_ruler_offset_x || 0,
+          draft.height_ruler_offset_y || 0,
+          output
+        );
         const lengthValue = Number.parseFloat(productInfo.product_length || "");
         const widthValue = Number.parseFloat(productInfo.product_width || "");
         const heightValue = Number.parseFloat(productInfo.product_height || "");
@@ -1176,26 +1295,26 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         context.font = `${Math.max(12, Math.round(19 * Math.min(scaleX, scaleY)))}px sans-serif`;
         context.textAlign = "center";
         context.beginPath();
-        context.moveTo(ruler.left, ruler.horizontalY);
-        context.lineTo(ruler.right, ruler.horizontalY);
-        context.moveTo(ruler.left, ruler.horizontalY - 9 * scaleY);
-        context.lineTo(ruler.left, ruler.horizontalY + 9 * scaleY);
-        context.moveTo(ruler.right, ruler.horizontalY - 9 * scaleY);
-        context.lineTo(ruler.right, ruler.horizontalY + 9 * scaleY);
-        context.moveTo(ruler.verticalX, ruler.top);
-        context.lineTo(ruler.verticalX, ruler.bottom);
-        context.moveTo(ruler.verticalX - 9 * scaleX, ruler.top);
-        context.lineTo(ruler.verticalX + 9 * scaleX, ruler.top);
-        context.moveTo(ruler.verticalX - 9 * scaleX, ruler.bottom);
-        context.lineTo(ruler.verticalX + 9 * scaleX, ruler.bottom);
+        context.moveTo(lengthRuler.start.x, lengthRuler.start.y);
+        context.lineTo(lengthRuler.end.x, lengthRuler.end.y);
+        context.moveTo(lengthRuler.start.x, lengthRuler.start.y - 9 * scaleY);
+        context.lineTo(lengthRuler.start.x, lengthRuler.start.y + 9 * scaleY);
+        context.moveTo(lengthRuler.end.x, lengthRuler.end.y - 9 * scaleY);
+        context.lineTo(lengthRuler.end.x, lengthRuler.end.y + 9 * scaleY);
+        context.moveTo(heightRuler.start.x, heightRuler.start.y);
+        context.lineTo(heightRuler.end.x, heightRuler.end.y);
+        context.moveTo(heightRuler.start.x - 9 * scaleX, heightRuler.start.y);
+        context.lineTo(heightRuler.start.x + 9 * scaleX, heightRuler.start.y);
+        context.moveTo(heightRuler.end.x - 9 * scaleX, heightRuler.end.y);
+        context.lineTo(heightRuler.end.x + 9 * scaleX, heightRuler.end.y);
         widthRuler.segments.forEach(([start, end]) => {
           context.moveTo(start.x * scaleX, start.y * scaleY);
           context.lineTo(end.x * scaleX, end.y * scaleY);
         });
         context.stroke();
-        context.fillText(dimensionLabel(lengthValue), (ruler.left + ruler.right) / 2, ruler.horizontalY + 36 * scaleY);
+        context.fillText(dimensionLabel(lengthValue), (lengthRuler.start.x + lengthRuler.end.x) / 2, lengthRuler.start.y + 36 * scaleY);
         context.save();
-        context.translate(ruler.verticalX - 31 * scaleX, (ruler.top + ruler.bottom) / 2 - 7 * scaleY);
+        context.translate(heightRuler.start.x - 31 * scaleX, (heightRuler.start.y + heightRuler.end.y) / 2 - 7 * scaleY);
         context.rotate(-Math.PI / 2);
         context.fillText(dimensionLabel(heightValue), 0, 0);
         context.restore();
@@ -1364,8 +1483,9 @@ function SlotAdjustmentEditor({
   const [error, setError] = useState("");
   const [cropMode, setCropMode] = useState(false);
   const isPhoneComparison = platform === "jd" && slot.file_name === "5.jpg";
+  const isPhoneObjectEditor = isPhoneComparison && initialMoveTarget === "phone";
   const isInfoPage = platform === "vip" && slot.file_name === "401.jpg";
-  const [moveTarget] = useState<"product" | "phone">(initialMoveTarget);
+  const [moveTarget, setMoveTarget] = useState<AdjustmentTarget>(initialMoveTarget);
   const [infoMoveTarget, setInfoMoveTarget] = useState<InfoMoveTarget>(
     initial.product_show_ruler === false ? "product" : "product_rulers"
   );
@@ -1387,8 +1507,8 @@ function SlotAdjustmentEditor({
   const previewAbortRef = useRef<AbortController | null>(null);
   const moveTargetRef = useRef<AdjustmentTarget>("product");
 
-  const activeMoveTarget: AdjustmentTarget = isInfoPage && infoMoveTarget === "width_ruler"
-    ? "width_ruler"
+  const activeMoveTarget: AdjustmentTarget = isInfoPage
+    ? (infoMoveTarget === "product_rulers" ? "product" : infoMoveTarget)
     : moveTarget;
   moveTargetRef.current = activeMoveTarget;
 
@@ -1488,22 +1608,10 @@ function SlotAdjustmentEditor({
       event.preventDefault();
       const delta = event.deltaY < 0 ? 0.02 : -0.02;
       const current = draftRef.current;
-      if (isPhoneComparison && moveTargetRef.current === "phone") {
-        applyDraft({
-          ...current,
-          phone_scale: Math.max(0.5, Math.min(1.8, Math.round(((current.phone_scale || 1) + delta) * 100) / 100))
-        });
-      } else if (moveTargetRef.current === "width_ruler") {
-        applyDraft({
-          ...current,
-          width_ruler_scale: Math.max(0.5, Math.min(2, Math.round(((current.width_ruler_scale || 1) + delta) * 100) / 100))
-        });
-      } else {
-        applyDraft({
-          ...current,
-          zoom: Math.max(0.5, Math.min(4, Math.round((current.zoom + delta) * 100) / 100))
-        });
-      }
+      const target = moveTargetRef.current;
+      const maximum = target === "product" ? 4 : target === "phone" ? 1.8 : 2;
+      const nextScale = Math.max(0.5, Math.min(maximum, Math.round((targetScale(current, target) + delta) * 100) / 100));
+      applyDraft(withTargetScale(current, target, nextScale));
     };
     stage.addEventListener("wheel", handleWheel, { passive: false });
     return () => stage.removeEventListener("wheel", handleWheel);
@@ -1611,24 +1719,9 @@ function SlotAdjustmentEditor({
 
   function changeZoom(delta: number) {
     const current = draftRef.current;
-    if (isPhoneComparison && moveTarget === "phone") {
-      applyDraft({
-        ...current,
-        phone_scale: Math.max(0.5, Math.min(1.8, Math.round(((current.phone_scale || 1) + delta) * 100) / 100))
-      });
-      return;
-    }
-    if (isInfoPage && infoMoveTarget === "width_ruler") {
-      applyDraft({
-        ...current,
-        width_ruler_scale: Math.max(0.5, Math.min(2, Math.round(((current.width_ruler_scale || 1) + delta) * 100) / 100))
-      });
-      return;
-    }
-    applyDraft({
-      ...current,
-      zoom: Math.max(0.5, Math.min(4, Math.round((current.zoom + delta) * 100) / 100))
-    });
+    const maximum = activeMoveTarget === "product" ? 4 : activeMoveTarget === "phone" ? 1.8 : 2;
+    const nextScale = Math.max(0.5, Math.min(maximum, Math.round((targetScale(current, activeMoveTarget) + delta) * 100) / 100));
+    applyDraft(withTargetScale(current, activeMoveTarget, nextScale));
   }
 
   function reset() {
@@ -1636,23 +1729,12 @@ function SlotAdjustmentEditor({
       logoColorRef.current = "black";
       setLogoColor("black");
     }
-    if (isPhoneComparison && moveTarget === "phone") {
-      applyDraft({
-        ...draftRef.current,
-        phone_scale: DEFAULT_ADJUSTMENT.phone_scale,
-        phone_offset_x: DEFAULT_ADJUSTMENT.phone_offset_x,
-        phone_offset_y: DEFAULT_ADJUSTMENT.phone_offset_y,
-        phone_alignment: DEFAULT_ADJUSTMENT.phone_alignment,
-        phone_show_ruler: DEFAULT_ADJUSTMENT.phone_show_ruler
-      });
-    } else if (isInfoPage && infoMoveTarget === "width_ruler") {
-      applyDraft({
-        ...draftRef.current,
-        width_ruler_scale: DEFAULT_ADJUSTMENT.width_ruler_scale,
-        width_ruler_offset_x: DEFAULT_ADJUSTMENT.width_ruler_offset_x,
-        width_ruler_offset_y: DEFAULT_ADJUSTMENT.width_ruler_offset_y
-      });
-    } else if (isPhoneComparison) {
+    if (activeMoveTarget !== "product") {
+      let next = withTargetScale(draftRef.current, activeMoveTarget, targetScale(DEFAULT_ADJUSTMENT, activeMoveTarget));
+      next = withTargetOffset(next, activeMoveTarget, 0, 0);
+      if (activeMoveTarget === "phone") next = { ...next, phone_alignment: "bottom", phone_show_ruler: false };
+      applyDraft(next);
+    } else if (isPhoneComparison || isInfoPage) {
       applyDraft({
         ...draftRef.current,
         zoom: DEFAULT_ADJUSTMENT.zoom,
@@ -1662,7 +1744,7 @@ function SlotAdjustmentEditor({
         crop_y: DEFAULT_ADJUSTMENT.crop_y,
         crop_width: DEFAULT_ADJUSTMENT.crop_width,
         crop_height: DEFAULT_ADJUSTMENT.crop_height,
-        product_show_ruler: DEFAULT_ADJUSTMENT.product_show_ruler
+        product_show_ruler: infoMoveTarget === "product_rulers"
       });
     } else {
       applyDraft({ ...DEFAULT_ADJUSTMENT });
@@ -1704,7 +1786,7 @@ function SlotAdjustmentEditor({
         <header>
           <div>
             <strong>{slot.file_name} · {slot.title}</strong>
-            <span>{slot.file_name === "606.jpg" ? `正在调整来源 ${sourceIndex + 1}` : isPhoneComparison ? `正在调整${moveTarget === "phone" ? "手机" : "商品图"}` : isInfoPage ? `正在调整${infoMoveTarget === "width_ruler" ? "宽标线" : infoMoveTarget === "product" ? "商品图" : "商品图和长高标线"}` : "当前输出位置独立调整"}</span>
+            <span>{slot.file_name === "606.jpg" ? `正在调整来源 ${sourceIndex + 1}` : isPhoneComparison ? `正在调整${moveTarget === "phone" ? "手机" : moveTarget === "phone_ruler" ? "手机高标线" : moveTarget === "length_ruler" ? "商品长标线" : moveTarget === "height_ruler" ? "商品高标线" : "商品图"}` : isInfoPage ? `正在调整${infoMoveTarget === "width_ruler" ? "宽标线" : infoMoveTarget === "length_ruler" ? "长标线" : infoMoveTarget === "height_ruler" ? "高标线" : infoMoveTarget === "product" ? "商品图" : "商品图和长高标线"}` : "当前输出位置独立调整"}</span>
           </div>
           <button type="button" className="icon-button" onClick={onClose} title="关闭"><X size={21} /></button>
         </header>
@@ -1712,8 +1794,8 @@ function SlotAdjustmentEditor({
         <div className="slot-adjustment-workspace">
           <div className="slot-adjustment-source">
             <div className="slot-adjustment-heading">
-              <strong>{isPhoneComparison && moveTarget === "phone" ? "手机参照图" : "原始图片"}</strong>
-              <span>{isPhoneComparison && moveTarget === "phone" ? "在右侧预览中拖动和缩放手机" : cropMode ? "拖动框选保留区域" : "点击“裁剪”后框选区域"}</span>
+              <strong>{isPhoneObjectEditor ? "手机参照图" : "原始图片"}</strong>
+              <span>{isPhoneObjectEditor ? "在右侧预览中调整手机或手机高标线" : cropMode ? "拖动框选保留区域" : "点击“裁剪”后框选区域"}</span>
             </div>
             <div
               ref={sourceStageRef}
@@ -1738,7 +1820,7 @@ function SlotAdjustmentEditor({
               }}
               onPointerCancel={finishCrop}
             >
-              <img ref={sourceImageRef} src={displaySourceUrl || sourceUrl} alt={isPhoneComparison && moveTarget === "phone" ? "手机参照图" : "原始素材"} draggable={false} />
+              <img ref={sourceImageRef} src={displaySourceUrl || sourceUrl} alt={isPhoneObjectEditor ? "手机参照图" : "原始素材"} draggable={false} />
               {cropSelection && <div className="slot-crop-selection" style={cropSelection} />}
             </div>
           </div>
@@ -1753,11 +1835,12 @@ function SlotAdjustmentEditor({
               className={`slot-result-stage${busy ? " is-loading" : ""}`}
               onPointerDown={(event) => {
                 event.currentTarget.setPointerCapture(event.pointerId);
+                const currentOffset = targetOffset(draftRef.current, activeMoveTarget);
                 moveStartRef.current = {
                   x: event.clientX,
                   y: event.clientY,
-                  offsetX: activeMoveTarget === "phone" ? draft.phone_offset_x || 0 : activeMoveTarget === "width_ruler" ? draft.width_ruler_offset_x || 0 : draft.offset_x,
-                  offsetY: activeMoveTarget === "phone" ? draft.phone_offset_y || 0 : activeMoveTarget === "width_ruler" ? draft.width_ruler_offset_y || 0 : draft.offset_y,
+                  offsetX: currentOffset.x,
+                  offsetY: currentOffset.y,
                   target: activeMoveTarget
                 };
               }}
@@ -1767,11 +1850,7 @@ function SlotAdjustmentEditor({
                 const bounds = event.currentTarget.getBoundingClientRect();
                 const nextOffsetX = Math.max(-1.5, Math.min(1.5, start.offsetX + (event.clientX - start.x) / bounds.width));
                 const nextOffsetY = Math.max(-1.5, Math.min(1.5, start.offsetY + (event.clientY - start.y) / bounds.height));
-                pendingMoveRef.current = start.target === "phone"
-                  ? { ...draftRef.current, phone_offset_x: nextOffsetX, phone_offset_y: nextOffsetY }
-                  : start.target === "width_ruler"
-                    ? { ...draftRef.current, width_ruler_offset_x: nextOffsetX, width_ruler_offset_y: nextOffsetY }
-                    : { ...draftRef.current, offset_x: nextOffsetX, offset_y: nextOffsetY };
+                pendingMoveRef.current = withTargetOffset(draftRef.current, start.target, nextOffsetX, nextOffsetY);
                 if (moveFrameRef.current === null) {
                   moveFrameRef.current = window.requestAnimationFrame(() => {
                     moveFrameRef.current = null;
@@ -1817,10 +1896,18 @@ function SlotAdjustmentEditor({
 
         <div className="slot-adjustment-controls">
           {(isPhoneComparison || isInfoPage) && <div className="slot-phone-controls" role="group" aria-label={isInfoPage ? "产品信息图调整" : "手机对比调整"}>
-            <span>{isInfoPage ? "调整对象" : isPhoneComparison && moveTarget === "phone" ? "手机标线" : "商品标线"}</span>
-            {isPhoneComparison && moveTarget === "phone" ? <>
-              <button type="button" className={draft.phone_show_ruler === false ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_show_ruler: false })}>仅手机</button>
-              <button type="button" className={draft.phone_show_ruler !== false ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_show_ruler: true })}>手机和标线</button>
+            <span>调整对象</span>
+            {isPhoneObjectEditor ? <>
+              <button type="button" className={moveTarget === "phone" ? "active-tool" : ""} onClick={() => {
+                setMoveTarget("phone");
+                setCropMode(false);
+                if (draftRef.current.phone_show_ruler !== false) applyDraft({ ...draftRef.current, phone_show_ruler: false });
+              }}>手机</button>
+              <button type="button" className={moveTarget === "phone_ruler" ? "active-tool" : ""} onClick={() => {
+                setMoveTarget("phone_ruler");
+                setCropMode(false);
+                if (draftRef.current.phone_show_ruler !== false) applyDraft({ ...draftRef.current, phone_show_ruler: false });
+              }}>手机高标线</button>
               <span>对齐</span>
               <button type="button" className={(draft.phone_alignment || "center") === "center" ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_alignment: "center" })}>中心同高</button>
               <button type="button" className={draft.phone_alignment === "bottom" ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, phone_alignment: "bottom" })}>底部齐平</button>
@@ -1833,18 +1920,40 @@ function SlotAdjustmentEditor({
                 setInfoMoveTarget("product_rulers");
                 if (draftRef.current.product_show_ruler === false) applyDraft({ ...draftRef.current, product_show_ruler: true });
               }}>商品图和长高标线</button>
+              <button type="button" className={infoMoveTarget === "length_ruler" ? "active-tool" : ""} onClick={() => {
+                setInfoMoveTarget("length_ruler");
+                setCropMode(false);
+                if (draftRef.current.product_show_ruler !== false) applyDraft({ ...draftRef.current, product_show_ruler: false });
+              }}>长标线</button>
+              <button type="button" className={infoMoveTarget === "height_ruler" ? "active-tool" : ""} onClick={() => {
+                setInfoMoveTarget("height_ruler");
+                setCropMode(false);
+                if (draftRef.current.product_show_ruler !== false) applyDraft({ ...draftRef.current, product_show_ruler: false });
+              }}>高标线</button>
               <button type="button" className={infoMoveTarget === "width_ruler" ? "active-tool" : ""} onClick={() => {
                 setInfoMoveTarget("width_ruler");
                 setCropMode(false);
               }}>宽标线</button>
             </> : <>
-              <button type="button" className={draft.product_show_ruler === false ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, product_show_ruler: false })}>仅商品图</button>
-              <button type="button" className={draft.product_show_ruler !== false ? "active-tool" : ""} onClick={() => applyDraft({ ...draftRef.current, product_show_ruler: true })}>商品图和标线</button>
+              <button type="button" className={moveTarget === "product" ? "active-tool" : ""} onClick={() => {
+                setMoveTarget("product");
+                if (draftRef.current.product_show_ruler !== false) applyDraft({ ...draftRef.current, product_show_ruler: false });
+              }}>商品图</button>
+              <button type="button" className={moveTarget === "length_ruler" ? "active-tool" : ""} onClick={() => {
+                setMoveTarget("length_ruler");
+                setCropMode(false);
+                if (draftRef.current.product_show_ruler !== false) applyDraft({ ...draftRef.current, product_show_ruler: false });
+              }}>商品长标线</button>
+              <button type="button" className={moveTarget === "height_ruler" ? "active-tool" : ""} onClick={() => {
+                setMoveTarget("height_ruler");
+                setCropMode(false);
+                if (draftRef.current.product_show_ruler !== false) applyDraft({ ...draftRef.current, product_show_ruler: false });
+              }}>商品高标线</button>
             </>}
           </div>}
-          {(!isPhoneComparison || moveTarget === "product") && (!isInfoPage || infoMoveTarget !== "width_ruler") && <button type="button" className={cropMode ? "active-tool" : ""} onClick={toggleCropMode}><Crop size={18} />裁剪</button>}
+          {activeMoveTarget === "product" && <button type="button" className={cropMode ? "active-tool" : ""} onClick={toggleCropMode}><Crop size={18} />裁剪</button>}
           <button type="button" onClick={() => changeZoom(-0.05)}><ZoomOut size={18} />缩小</button>
-          <span className="slot-zoom-value">{Math.round((activeMoveTarget === "phone" ? draft.phone_scale || 1 : activeMoveTarget === "width_ruler" ? draft.width_ruler_scale || 1 : draft.zoom) * 100)}%</span>
+          <span className="slot-zoom-value">{Math.round(targetScale(draft, activeMoveTarget) * 100)}%</span>
           <button type="button" onClick={() => changeZoom(0.05)}><ZoomIn size={18} />放大</button>
           {supportsLogoColor && <div className="slot-logo-color" role="group" aria-label="左上角 Logo 颜色">
             <span>Logo</span>
@@ -1863,9 +1972,9 @@ function SlotAdjustmentEditor({
             onClick={() => void refreshPreview(draftRef.current, draftVersionRef.current)}
           ><CheckCircle2 size={18} />{previewSynced ? "预览已确认" : "确认预览"}</button>
           <span className="slot-drag-hint"><Move size={16} />位置 {
-            Math.round((activeMoveTarget === "phone" ? draft.phone_offset_x || 0 : activeMoveTarget === "width_ruler" ? draft.width_ruler_offset_x || 0 : draft.offset_x) * 100)
+            Math.round(targetOffset(draft, activeMoveTarget).x * 100)
           } / {
-            Math.round((activeMoveTarget === "phone" ? draft.phone_offset_y || 0 : activeMoveTarget === "width_ruler" ? draft.width_ruler_offset_y || 0 : draft.offset_y) * 100)
+            Math.round(targetOffset(draft, activeMoveTarget).y * 100)
           }</span>
           {!previewSynced && <span className="slot-preview-pending">调整后请先确认预览</span>}
           <button type="button" className="primary" disabled={busy || !previewSynced} onClick={() => void saveAdjustment()}><Save size={18} />保存调整</button>

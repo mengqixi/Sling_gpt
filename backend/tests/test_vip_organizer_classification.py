@@ -11,8 +11,10 @@ from backend.services.vip_organizer_service import (
     _catalog_product_page,
     _classify_product_metrics,
     _detail_showcase_page,
+    _detail_shape_offset_y,
     _api_analysis_prompt,
     _font,
+    _jd_product_body_bbox,
     _model_showcase_page,
     _normalized_product_page,
     _paste_layer,
@@ -64,7 +66,28 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         assert foreground is not None
         self.assertGreaterEqual(foreground[2] - foreground[0], 530)
         self.assertAlmostEqual((foreground[0] + foreground[2]) / 2, 400, delta=2)
-        self.assertAlmostEqual((foreground[1] + foreground[3]) / 2, 440, delta=2)
+        self.assertAlmostEqual((foreground[1] + foreground[3]) / 2, 424, delta=2)
+
+    def test_detail_shape_offset_moves_tall_details_lower_than_wide_details(self):
+        self.assertEqual(_detail_shape_offset_y(Image.new("RGBA", (60, 120))), -0.105)
+        self.assertEqual(_detail_shape_offset_y(Image.new("RGBA", (120, 120))), -0.11)
+        self.assertEqual(_detail_shape_offset_y(Image.new("RGBA", (180, 100))), -0.13)
+
+    def test_jd_measurement_includes_hobo_shoulders(self):
+        layer = Image.new("RGBA", (520, 420), (0, 0, 0, 0))
+        mask = Image.new("L", layer.size, 0)
+        draw = ImageDraw.Draw(mask)
+        draw.polygon(
+            [(25, 75), (95, 18), (170, 120), (260, 165), (350, 120), (425, 18), (495, 75), (470, 385), (50, 385)],
+            fill=255,
+        )
+        draw.ellipse((125, -35, 395, 180), fill=0)
+        layer.paste((70, 80, 90, 255), mask=mask)
+
+        _, top, _, bottom = _jd_product_body_bbox(layer)
+
+        self.assertLessEqual(top, 35)
+        self.assertGreaterEqual(bottom, 380)
 
     def test_catalog_product_normalizes_small_and_large_source_scale(self):
         white = Image.new("RGB", (800, 800), "white")
@@ -469,7 +492,7 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         )
         self.assertEqual(logo_detail.size, (800, 800))
         self.assertEqual(interior_detail.size, (800, 800))
-        self.assertEqual(logo_detail.getpixel((20, 400)), (255, 255, 255))
+        self.assertEqual(logo_detail.getpixel((20, 400)), (181, 34, 38))
         self.assertEqual(logo_detail.getpixel((400, 400)), (181, 34, 38))
         self.assertEqual(interior_detail.getpixel((780, 400)), (255, 255, 255))
         self.assertEqual(interior_detail.getpixel((400, 400)), (181, 34, 38))
@@ -513,7 +536,8 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         self.assertEqual(mapped["50.jpg"]["adjustments"][0]["zoom"], 0.8)
 
     def test_manual_adjustment_moves_and_scales_without_changing_source_color(self):
-        source = Image.new("RGB", (320, 480), "#b52226")
+        source = Image.new("RGB", (800, 800), "white")
+        ImageDraw.Draw(source).rectangle((250, 250, 550, 550), fill="#b52226")
         adjustment = {
             "zoom": 1.35,
             "offset_x": 0.16,

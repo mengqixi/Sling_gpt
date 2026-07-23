@@ -1519,9 +1519,18 @@ def _normalize_adjustment(value: dict[str, Any] | None) -> dict[str, Any]:
         "phone_alignment": "center" if value.get("phone_alignment") == "center" else "bottom",
         "product_show_ruler": value.get("product_show_ruler") is not False,
         "phone_show_ruler": value.get("phone_show_ruler") is not False,
+        "length_ruler_scale": number("length_ruler_scale", 1.0, 0.5, 2.0),
+        "length_ruler_offset_x": number("length_ruler_offset_x", 0.0, -1.5, 1.5),
+        "length_ruler_offset_y": number("length_ruler_offset_y", 0.0, -1.5, 1.5),
+        "height_ruler_scale": number("height_ruler_scale", 1.0, 0.5, 2.0),
+        "height_ruler_offset_x": number("height_ruler_offset_x", 0.0, -1.5, 1.5),
+        "height_ruler_offset_y": number("height_ruler_offset_y", 0.0, -1.5, 1.5),
         "width_ruler_scale": number("width_ruler_scale", 1.0, 0.5, 2.0),
         "width_ruler_offset_x": number("width_ruler_offset_x", 0.0, -1.5, 1.5),
         "width_ruler_offset_y": number("width_ruler_offset_y", 0.0, -1.5, 1.5),
+        "phone_ruler_scale": number("phone_ruler_scale", 1.0, 0.5, 2.0),
+        "phone_ruler_offset_x": number("phone_ruler_offset_x", 0.0, -1.5, 1.5),
+        "phone_ruler_offset_y": number("phone_ruler_offset_y", 0.0, -1.5, 1.5),
     }
 
 
@@ -1672,6 +1681,17 @@ def _has_light_studio_border(source: Image.Image) -> bool:
     return float(np.mean(bright & neutral)) >= 0.78
 
 
+def _detail_shape_offset_y(cutout: Image.Image) -> float:
+    ratio = cutout.width / max(1, cutout.height)
+    if ratio <= 0.78:
+        return -0.105
+    if ratio <= 1.05:
+        return -0.11
+    if ratio <= 1.45:
+        return -0.12
+    return -0.13
+
+
 def _paste_detail_layer(
     canvas: Image.Image,
     source: Image.Image,
@@ -1682,6 +1702,7 @@ def _paste_detail_layer(
     auto_zoom: float = 0.9,
     auto_offset_y: float = -0.045,
     auto_handle_layout: bool = False,
+    auto_shape_layout: bool = False,
     default_mode: str = "cover",
 ) -> None:
     cropped = _crop_source(source, adjustment)
@@ -1689,6 +1710,7 @@ def _paste_detail_layer(
         cutout = _product_cutout(cropped)
         normalized = _normalize_adjustment(adjustment)
         handle_offset_y = -0.04 * _handle_visual_lift(cutout) if auto_handle_layout else 0.0
+        shape_offset_y = _detail_shape_offset_y(cutout) if auto_shape_layout else auto_offset_y
         _paste_layer(
             canvas,
             cutout,
@@ -1696,7 +1718,7 @@ def _paste_detail_layer(
             {
                 "zoom": normalized["zoom"] * auto_zoom,
                 "offset_x": normalized["offset_x"],
-                "offset_y": normalized["offset_y"] + auto_offset_y + handle_offset_y,
+                "offset_y": normalized["offset_y"] + shape_offset_y + handle_offset_y,
             },
             mode="contain",
             clip_box=clip_box,
@@ -1720,6 +1742,7 @@ def _paste_product(
     *,
     clip_box: tuple[int, int, int, int] | None = None,
     auto_handle_layout: bool = False,
+    auto_offset_y: float = 0.0,
 ) -> None:
     image_id = source.info.get("_organizer_image_id")
     modified_ns = source.info.get("_organizer_modified_ns")
@@ -1736,7 +1759,7 @@ def _paste_product(
         normalized = _normalize_adjustment(adjustment)
         layout_adjustment = {
             **normalized,
-            "offset_y": normalized["offset_y"] - 0.065 * _handle_visual_lift(cutout),
+            "offset_y": normalized["offset_y"] + auto_offset_y - 0.065 * _handle_visual_lift(cutout),
         }
     _paste_layer(canvas, cutout, box, layout_adjustment, clip_box=clip_box)
 
@@ -1912,7 +1935,7 @@ def _info_ruler_geometry(
     line_top = round(body_top - 5)
     line_height = max(1, line_bottom - line_top)
     vertical_x = max(285, line_left - max(34, round(line_width * 0.205)))
-    horizontal_y = min(535, line_bottom + max(24, round(line_height * 0.175)))
+    horizontal_y = min(535, line_bottom + max(34, round(line_height * 0.19)))
     return {
         "left": line_left,
         "right": line_right,
@@ -1921,6 +1944,29 @@ def _info_ruler_geometry(
         "vertical_x": vertical_x,
         "horizontal_y": horizontal_y,
     }
+
+
+def _transform_ruler_segment(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    *,
+    scale: float,
+    offset_x: float,
+    offset_y: float,
+    canvas_size: tuple[int, int],
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    center_x = (start[0] + end[0]) / 2
+    center_y = (start[1] + end[1]) / 2
+    move_x = offset_x * canvas_size[0] * 0.18
+    move_y = offset_y * canvas_size[1] * 0.18
+
+    def transform(point: tuple[float, float]) -> tuple[int, int]:
+        return (
+            round(center_x + (point[0] - center_x) * scale + move_x),
+            round(center_y + (point[1] - center_y) * scale + move_y),
+        )
+
+    return transform(start), transform(end)
 
 
 def _info_width_ruler_geometry(
@@ -1963,6 +2009,7 @@ def _normalized_product_page(
     transparent: bool = False,
     adjustment: dict[str, Any] | None = None,
     auto_handle_layout: bool = False,
+    auto_offset_y: float = 0.0,
     manual_padding_ratio: float | None = None,
 ) -> Image.Image:
     """Normalize non-model assets into a stable safe area regardless of source whitespace."""
@@ -1987,13 +2034,19 @@ def _normalized_product_page(
         adjustment,
         clip_box=clip_box,
         auto_handle_layout=auto_handle_layout,
+        auto_offset_y=auto_offset_y,
     )
     return canvas
 
 
 def _catalog_product_page(source: Image.Image, adjustment: dict[str, Any] | None = None) -> Image.Image:
-    """Match the catalog reference with a stable white border and a lower visual center."""
-    return _normalized_product_page(source, adjustment=adjustment, auto_handle_layout=True)
+    """Match the catalog reference while centering the visible bag body."""
+    return _normalized_product_page(
+        source,
+        adjustment=adjustment,
+        auto_handle_layout=True,
+        auto_offset_y=-0.03,
+    )
 
 
 def _dimension_value_mm(value: str | None) -> float | None:
@@ -2073,24 +2126,38 @@ def _info_page(
     width_ruler = _info_width_ruler_geometry(base_body, adjustment)
 
     line_color = "#8a8a8a"
-    horizontal_y = ruler["horizontal_y"]
-    draw.line((ruler["left"], horizontal_y, ruler["right"], horizontal_y), fill=line_color, width=2)
-    draw.line((ruler["left"], horizontal_y - 9, ruler["left"], horizontal_y + 9), fill=line_color, width=2)
-    draw.line((ruler["right"], horizontal_y - 9, ruler["right"], horizontal_y + 9), fill=line_color, width=2)
+    length_start, length_end = _transform_ruler_segment(
+        (ruler["left"], ruler["horizontal_y"]),
+        (ruler["right"], ruler["horizontal_y"]),
+        scale=normalized["length_ruler_scale"],
+        offset_x=normalized["length_ruler_offset_x"],
+        offset_y=normalized["length_ruler_offset_y"],
+        canvas_size=image.size,
+    )
+    draw.line((length_start, length_end), fill=line_color, width=2)
+    draw.line((length_start[0], length_start[1] - 9, length_start[0], length_start[1] + 9), fill=line_color, width=2)
+    draw.line((length_end[0], length_end[1] - 9, length_end[0], length_end[1] + 9), fill=line_color, width=2)
     length_text = _dimension_mm(info.get("product_length") or "")
     length_font = _font(19)
     length_box = draw.textbbox((0, 0), length_text, font=length_font)
-    length_center = (ruler["left"] + ruler["right"]) / 2
-    draw.text((length_center - (length_box[2] - length_box[0]) / 2, horizontal_y + 16), length_text, font=length_font, fill="#555555")
+    length_center = (length_start[0] + length_end[0]) / 2
+    draw.text((length_center - (length_box[2] - length_box[0]) / 2, length_start[1] + 16), length_text, font=length_font, fill="#555555")
 
-    vertical_x = ruler["vertical_x"]
-    draw.line((vertical_x, ruler["top"], vertical_x, ruler["bottom"]), fill=line_color, width=2)
-    draw.line((vertical_x - 9, ruler["top"], vertical_x + 9, ruler["top"]), fill=line_color, width=2)
-    draw.line((vertical_x - 9, ruler["bottom"], vertical_x + 9, ruler["bottom"]), fill=line_color, width=2)
+    height_start, height_end = _transform_ruler_segment(
+        (ruler["vertical_x"], ruler["top"]),
+        (ruler["vertical_x"], ruler["bottom"]),
+        scale=normalized["height_ruler_scale"],
+        offset_x=normalized["height_ruler_offset_x"],
+        offset_y=normalized["height_ruler_offset_y"],
+        canvas_size=image.size,
+    )
+    draw.line((height_start, height_end), fill=line_color, width=2)
+    draw.line((height_start[0] - 9, height_start[1], height_start[0] + 9, height_start[1]), fill=line_color, width=2)
+    draw.line((height_end[0] - 9, height_end[1], height_end[0] + 9, height_end[1]), fill=line_color, width=2)
     _draw_rotated_text(
         image,
         _dimension_mm(info.get("product_height") or ""),
-        (vertical_x - 45, ruler["top"] + max(8, (ruler["bottom"] - ruler["top"] - 98) // 2)),
+        (height_start[0] - 45, round((height_start[1] + height_end[1]) / 2 - 49)),
         90,
         _font(18),
     )
@@ -2146,7 +2213,7 @@ def _detail_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None
         adjustment,
         clip_box=clip_box,
         auto_zoom=0.82,
-        auto_offset_y=-0.11,
+        auto_shape_layout=True,
     )
     return canvas
 
@@ -2317,49 +2384,8 @@ def _mask_longest_run(values: np.ndarray) -> tuple[int, int] | None:
 
 
 def _jd_product_body_bbox(cutout: Image.Image) -> tuple[int, int, int, int]:
-    """Estimate the solid bag body while excluding sparse handles and chains."""
-    alpha = np.asarray(cutout.getchannel("A"))
-    mask = alpha > 28
-    ys, xs = np.where(mask)
-    if not len(xs):
-        return 0, 0, cutout.width, cutout.height
-
-    full_left = int(xs.min())
-    full_top = int(ys.min())
-    full_right = int(xs.max()) + 1
-    full_bottom = int(ys.max()) + 1
-    row_counts = mask.sum(axis=1)
-    max_row_width = int(row_counts.max())
-    # Sparse handles and chains often form a closed shape after background
-    # removal. Requiring a substantially broad row keeps them in the cutout
-    # while excluding them from the physical bag-body measurement.
-    broad_rows = row_counts >= max(10, int(round(max_row_width * 0.65)))
-    row_run = _mask_longest_run(broad_rows)
-    if row_run is None:
-        return full_left, full_top, full_right, full_bottom
-
-    body_top, body_bottom = row_run
-    padding_y = max(1, int(round((body_bottom - body_top) * 0.04)))
-    body_top = max(full_top, body_top - padding_y)
-    body_bottom = min(full_bottom, body_bottom + padding_y)
-
-    body_mask = mask[body_top:body_bottom]
-    column_counts = body_mask.sum(axis=0)
-    solid_columns = column_counts >= max(2, int(round((body_bottom - body_top) * 0.14)))
-    column_run = _mask_longest_run(solid_columns)
-    if column_run is None:
-        body_xs = np.where(body_mask)[1]
-        body_left = int(body_xs.min())
-        body_right = int(body_xs.max()) + 1
-    else:
-        body_left, body_right = column_run
-
-    padding_x = max(1, int(round((body_right - body_left) * 0.025)))
-    body_left = max(full_left, body_left - padding_x)
-    body_right = min(full_right, body_right + padding_x)
-    if body_right - body_left < cutout.width * 0.18 or body_bottom - body_top < cutout.height * 0.12:
-        return full_left, full_top, full_right, full_bottom
-    return body_left, body_top, body_right, body_bottom
+    """Measure the bag body, including crescent shoulders but excluding handles and chains."""
+    return _info_measurement_bbox(cutout)
 
 
 def _jd_product_shape_profile(
@@ -2665,9 +2691,9 @@ def _jd_size_comparison_page(
         round(phone_height * reference.width / reference.height) if reference is not None else round(phone_height * 0.83),
     )
     phone_left = round(phone_center_x - phone_width / 2)
-    phone_ruler_gap = max(38, round(width * 0.075))
+    phone_ruler_gap = max(22, round(width * 0.035))
     phone_label_clearance = max(40, round(width * 0.05))
-    phone_right_allowance = phone_ruler_gap + phone_label_clearance
+    phone_right_allowance = phone_ruler_gap + phone_label_clearance if normalized["phone_show_ruler"] else 8
     phone_left = min(max(safe_left, phone_left), max(safe_left, safe_right - phone_width - phone_right_allowance))
     phone_center_x = phone_left + phone_width / 2
     phone_bottom_allowance = max(28, round(height * 0.055))
@@ -2682,17 +2708,33 @@ def _jd_size_comparison_page(
     ruler_gap = max(28, round(width * 0.045))
     product_ruler_body = rendered_body if normalized["product_show_ruler"] else base_layout["body_box"]
     horizontal_y = min(height - 70, product_ruler_body[3] + ruler_gap)
-    _draw_jd_dimension_bar(
-        canvas,
+    length_start, length_end = _transform_ruler_segment(
         (product_ruler_body[0], horizontal_y),
         (product_ruler_body[2], horizontal_y),
+        scale=normalized["length_ruler_scale"],
+        offset_x=normalized["length_ruler_offset_x"],
+        offset_y=normalized["length_ruler_offset_y"],
+        canvas_size=size,
+    )
+    _draw_jd_dimension_bar(
+        canvas,
+        length_start,
+        length_end,
         _dimension_mm(product_info.get("product_length", "")),
     )
     vertical_x = max(30, product_ruler_body[0] - ruler_gap)
-    _draw_jd_dimension_bar(
-        canvas,
+    height_start, height_end = _transform_ruler_segment(
         (vertical_x, product_ruler_body[1]),
         (vertical_x, product_ruler_body[3]),
+        scale=normalized["height_ruler_scale"],
+        offset_x=normalized["height_ruler_offset_x"],
+        offset_y=normalized["height_ruler_offset_y"],
+        canvas_size=size,
+    )
+    _draw_jd_dimension_bar(
+        canvas,
+        height_start,
+        height_end,
         _dimension_mm(product_info.get("product_height", "")),
         vertical=True,
     )
@@ -2730,11 +2772,19 @@ def _jd_size_comparison_page(
             base_phone_top + base_phone_height,
         )
 
-    phone_ruler_x = min(safe_right - phone_label_clearance, phone_ruler_box[2] + phone_ruler_gap)
-    _draw_jd_dimension_bar(
-        canvas,
+    phone_ruler_x = min(safe_right - 12, phone_ruler_box[2] + phone_ruler_gap)
+    phone_ruler_start, phone_ruler_end = _transform_ruler_segment(
         (phone_ruler_x, phone_ruler_box[1]),
         (phone_ruler_x, phone_ruler_box[3]),
+        scale=normalized["phone_ruler_scale"],
+        offset_x=normalized["phone_ruler_offset_x"],
+        offset_y=normalized["phone_ruler_offset_y"],
+        canvas_size=size,
+    )
+    _draw_jd_dimension_bar(
+        canvas,
+        phone_ruler_start,
+        phone_ruler_end,
         "163mm",
         vertical=True,
         vertical_label_side="right",
@@ -2743,7 +2793,7 @@ def _jd_size_comparison_page(
     phone_label = JD_PHONE_LABEL
     label_box = draw.textbbox((0, 0), phone_label, font=label_font)
     draw.text(
-        (round((phone_ruler_box[0] + phone_ruler_box[2] - (label_box[2] - label_box[0])) / 2), phone_ruler_box[3] + 12),
+        (round((phone_box[0] + phone_box[2] - (label_box[2] - label_box[0])) / 2), phone_box[3] + 12),
         phone_label,
         font=label_font,
         fill="#555555",
@@ -2770,14 +2820,24 @@ def _render_jd_slot_image(
         return _jd_model_page(source, size, adjustment, with_logo=True, logo_color=logo_color)
     if file_name == "2.jpg":
         return _jd_product_page(source, size, adjustment, logo_color=logo_color)
-    if file_name in {"3.jpg", "4.jpg"}:
+    if file_name == "3.jpg":
+        canvas = Image.new("RGB", size, "white")
+        _paste_layer(
+            canvas,
+            _crop_source(source.convert("RGB"), adjustment),
+            (0, 0, *size),
+            adjustment,
+            mode=_crop_aware_mode(adjustment, "cover"),
+        )
+        _draw_jd_elle_logo(canvas, size, logo_color)
+        return canvas
+    if file_name == "4.jpg":
         return _jd_product_page(
             source,
             size,
             adjustment,
             detail=True,
-            detail_offset_y=-0.055,
-            handle_aware=file_name == "3.jpg",
+            detail_offset_y=0.0,
             logo_color=logo_color,
         )
     if file_name == "5.jpg":
@@ -2866,28 +2926,26 @@ def _render_slot_image(
         _paste_layer(canvas, _crop_source(source.convert("RGB"), adjustment), (0, 0, 800, 800), adjustment, mode=_crop_aware_mode(adjustment, "cover"))
         return canvas
     if file_name == "30.png":
-        return _normalized_product_page(source, transparent=True, adjustment=adjustment, manual_padding_ratio=0.18)
+        return _normalized_product_page(
+            source,
+            transparent=True,
+            adjustment=adjustment,
+            auto_handle_layout=True,
+            auto_offset_y=-0.03,
+            manual_padding_ratio=0.18,
+        )
     if file_name == "50.jpg":
         canvas = Image.new("RGB", (950, 1200), "white")
         _paste_layer(canvas, _crop_source(source.convert("RGB"), adjustment), (0, 0, 950, 1200), adjustment, mode=_crop_aware_mode(adjustment, "cover"))
         return canvas
     if file_name == "4.jpg":
         canvas = Image.new("RGB", (800, 800), "white")
-        box = (72, 72, 728, 728)
-        clip_box = _expanded_safe_box(
-            box,
-            canvas.size,
-            padding_ratio=0.18,
-        ) if _has_manual_layout_adjustment(adjustment) else None
-        _paste_detail_layer(
+        _paste_layer(
             canvas,
-            source,
-            box,
+            _crop_source(source.convert("RGB"), adjustment),
+            (0, 0, 800, 800),
             adjustment,
-            clip_box=clip_box,
-            auto_zoom=1.0,
-            auto_offset_y=-0.10,
-            default_mode="contain",
+            mode=_crop_aware_mode(adjustment, "cover"),
         )
         return canvas
     if file_name == "15.jpg":
