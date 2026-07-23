@@ -265,11 +265,8 @@ function slotPreviewLayout(slot: Slot, platform: OrganizerPlatform, sourceIndex:
   if (["601.jpg", "602.jpg", "603.jpg"].includes(slot.file_name)) {
     return { x: 56 / 750, y: 65 / 750, width: 638 / 750, height: 634 / 750, mode: "cover" as const };
   }
-  if (slot.file_name === "604.jpg") {
+  if (["604.jpg", "605.jpg"].includes(slot.file_name)) {
     return { x: 52 / 750, y: 181 / 750, width: 643 / 750, height: 523 / 750, mode: "cover" as const };
-  }
-  if (slot.file_name === "605.jpg") {
-    return { x: 52 / 750, y: 22 / 750, width: 641 / 750, height: 682 / 750, mode: "cover" as const };
   }
   if (slot.file_name === "801.jpg") {
     return { x: 90 / 750, y: 105 / 750, width: 570 / 750, height: 560 / 750, mode: "contain" as const };
@@ -1046,8 +1043,8 @@ function drawJdComparisonPreview(
       : height * 0.78;
     let left = output.width * 0.75 + offsetX * output.width * 0.18 - width / 2;
     let top = (draft.phone_alignment || "bottom") === "bottom"
-      ? geometry.body.bottom - height
-      : (geometry.body.top + geometry.body.bottom - height) / 2;
+      ? baseGeometry.body.bottom - height
+      : (baseGeometry.body.top + baseGeometry.body.bottom - height) / 2;
     top += offsetY * output.height * 0.18;
     left = Math.max(geometry.safe.left, Math.min(left, geometry.safe.right - width - phoneRightAllowance));
     top = Math.max(geometry.safe.top, Math.min(top, geometry.safe.bottom - height - phoneBottomAllowance));
@@ -1135,7 +1132,8 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         || draft.crop_y > 0.0001
         || draft.crop_width < 0.9999
         || draft.crop_height < 0.9999;
-      const automaticDetailCandidate = platform !== "jd" && slot.file_name === "604.jpg";
+      const automaticDetailCandidate = platform !== "jd"
+        && ["604.jpg", "605.jpg"].includes(slot.file_name);
       const usesAutomaticDetailCutout = automaticDetailCandidate
         && !hasManualCrop
         && livePreviewHasLightStudioBorder(sourceUrl, image);
@@ -1224,7 +1222,7 @@ function LiveSlotPreview({ sourceUrl, templateUrl, slot, draft, platform, source
         const scaleX = output.width / 750;
         const scaleY = output.height / 665;
         const lineColor = "#777";
-        const layerBounds = productLayer ? liveProductBodyBounds(productLayer) : {
+        const layerBounds = productLayer ? liveInfoMeasurementBounds(productLayer) : {
           left: sourceX,
           top: sourceY,
           right: sourceX + sourceWidth,
@@ -1755,7 +1753,9 @@ function SlotAdjustmentEditor({
         crop_y: DEFAULT_ADJUSTMENT.crop_y,
         crop_width: DEFAULT_ADJUSTMENT.crop_width,
         crop_height: DEFAULT_ADJUSTMENT.crop_height,
-        product_show_ruler: infoMoveTarget === "product_rulers"
+        product_show_ruler: isInfoPage
+          ? infoMoveTarget === "product_rulers"
+          : draftRef.current.product_show_ruler
       });
     } else {
       applyDraft({ ...DEFAULT_ADJUSTMENT });
@@ -1946,10 +1946,14 @@ function SlotAdjustmentEditor({
                 setCropMode(false);
               }}>宽标线</button>
             </> : <>
-              <button type="button" className={moveTarget === "product" ? "active-tool" : ""} onClick={() => {
+              <button type="button" className={moveTarget === "product" && draft.product_show_ruler === false ? "active-tool" : ""} onClick={() => {
                 setMoveTarget("product");
                 if (draftRef.current.product_show_ruler !== false) applyDraft({ ...draftRef.current, product_show_ruler: false });
               }}>商品图</button>
+              <button type="button" className={moveTarget === "product" && draft.product_show_ruler !== false ? "active-tool" : ""} onClick={() => {
+                setMoveTarget("product");
+                if (draftRef.current.product_show_ruler === false) applyDraft({ ...draftRef.current, product_show_ruler: true });
+              }}>商品图和长高标线</button>
               <button type="button" className={moveTarget === "length_ruler" ? "active-tool" : ""} onClick={() => {
                 setMoveTarget("length_ruler");
                 setCropMode(false);

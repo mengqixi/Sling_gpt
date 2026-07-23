@@ -2231,22 +2231,6 @@ def _detail_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None
     return canvas
 
 
-def _hardware_detail_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None = None) -> Image.Image:
-    """Match the untitled 605 logo/hardware reference with its fixed white margin."""
-    canvas = Image.new("RGB", (750, 750), "white")
-    box = (52, 22, 693, 704)
-    clip_box = _expanded_safe_box(box, canvas.size, padding_ratio=0.055) if _has_manual_layout_adjustment(adjustment) else None
-    _paste_layer(
-        canvas,
-        _crop_source(source.convert("RGB"), adjustment),
-        box,
-        adjustment,
-        mode=_crop_aware_mode(adjustment, "cover"),
-        clip_box=clip_box,
-    )
-    return canvas
-
-
 def _multi_angle_page(
     image_ids: list[int],
     adjustments: list[dict[str, Any]] | None = None,
@@ -2676,7 +2660,7 @@ def _jd_aligned_phone_top(
     phone_height: int,
     alignment: str,
 ) -> int:
-    """Align the phone against the currently rendered physical bag body."""
+    """Align the phone against the stable automatic bag-body baseline."""
     body_top = body_box[1]
     body_bottom = body_box[3]
     if alignment == "bottom":
@@ -2712,7 +2696,7 @@ def _jd_size_comparison_page(
     phone_height = round(JD_PHONE_HEIGHT_MM * rendered_pixels_per_mm * normalized["phone_scale"])
     phone_height = max(round(height * 0.095), min(round(height * 0.46), phone_height))
     phone_center_x = width * 0.75 + normalized["phone_offset_x"] * width * 0.18
-    phone_top = _jd_aligned_phone_top(rendered_body, phone_height, normalized["phone_alignment"])
+    phone_top = _jd_aligned_phone_top(base_layout["body_box"], phone_height, normalized["phone_alignment"])
     phone_top += round(normalized["phone_offset_y"] * height * 0.18)
     reference = _jd_phone_reference_layer()
     phone_width = max(
@@ -2785,7 +2769,7 @@ def _jd_size_comparison_page(
             else round(base_phone_height * 0.83),
         )
         base_phone_left = round(width * 0.75 - base_phone_width / 2)
-        base_phone_top = _jd_aligned_phone_top(rendered_body, base_phone_height, normalized["phone_alignment"])
+        base_phone_top = _jd_aligned_phone_top(base_layout["body_box"], base_phone_height, normalized["phone_alignment"])
         base_phone_left = min(
             max(safe_left, base_phone_left),
             max(safe_left, safe_right - base_phone_width - phone_right_allowance),
@@ -2974,10 +2958,8 @@ def _render_slot_image(
         return canvas
     if file_name in {"601.jpg", "602.jpg", "603.jpg"}:
         return _model_showcase_page(source, adjustment)
-    if file_name == "604.jpg":
+    if file_name in {"604.jpg", "605.jpg"}:
         return _detail_showcase_page(source, adjustment)
-    if file_name == "605.jpg":
-        return _hardware_detail_showcase_page(source, adjustment)
     if file_name == "801.jpg":
         return _normalized_product_page(source, size=(750, 750), box=(90, 105, 660, 665), adjustment=adjustment)
     return _catalog_product_page(source, adjustment)

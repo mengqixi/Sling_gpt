@@ -500,6 +500,7 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         self.assertEqual(hardware_showcase.size, (750, 750))
         self.assertEqual(detail_showcase.getpixel((375, 400)), (181, 34, 38))
         self.assertEqual(hardware_showcase.getpixel((375, 400)), (181, 34, 38))
+        self.assertIsNone(ImageChops.difference(detail_showcase, hardware_showcase).getbbox())
 
     def test_interior_slot_preserves_the_full_uploaded_frame(self):
         source = Image.new("RGB", (400, 600), "white")
