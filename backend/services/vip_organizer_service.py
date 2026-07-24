@@ -1574,6 +1574,10 @@ def _product_cutout(source: Image.Image) -> Image.Image:
 def _predict_product_matte(source: Image.Image) -> np.ndarray | None:
     if not U2NETP_MODEL_PATH.exists() or not CUTOUT_WORKER_PATH.exists():
         return None
+    configured_python = os.environ.get("SINO_CUTOUT_PYTHON", "").strip()
+    worker_python = Path(configured_python) if configured_python else Path(sys.executable)
+    if not worker_python.exists():
+        worker_python = Path(sys.executable)
     with tempfile.TemporaryDirectory(prefix="sino-cutout-") as directory:
         input_path = Path(directory) / "input.png"
         output_path = Path(directory) / "matte.png"
@@ -1587,7 +1591,7 @@ def _predict_product_matte(source: Image.Image) -> np.ndarray | None:
         try:
             subprocess.run(
                 [
-                    sys.executable,
+                    str(worker_python),
                     str(CUTOUT_WORKER_PATH),
                     str(U2NETP_MODEL_PATH),
                     str(input_path),
