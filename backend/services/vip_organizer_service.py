@@ -8,20 +8,23 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
+import tempfile
 import textwrap
 import uuid
 import zipfile
 from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Semaphore
 from typing import Any
 
 import cv2
 import numpy as np
 import requests
 from fastapi import UploadFile
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, PngImagePlugin
 
 from ..config import ALLOWED_IMAGE_EXTENSIONS, DATA_DIR
 from ..database import db_session, now_iso
@@ -39,12 +42,17 @@ JD_LOGO_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "
 JD_PHONE_REFERENCE_PATH = Path(__file__).resolve().parents[1] / "assets" / "iphone_reference.png"
 JD_LOGO_BLACK_PATH = Path(__file__).resolve().parents[1] / "assets" / "elle_logo_black.png"
 JD_LOGO_WHITE_PATH = Path(__file__).resolve().parents[1] / "assets" / "elle_logo_white.png"
+U2NETP_MODEL_PATH = Path(__file__).resolve().parents[1] / "assets" / "models" / "u2netp.onnx"
+CUTOUT_WORKER_PATH = Path(__file__).resolve().with_name("cutout_model_worker.py")
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
-PREVIEW_RENDER_VERSION = 18
+_CUTOUT_SEMAPHORE = Semaphore(3)
+_CUTOUT_INFERENCE_SEMAPHORE = Semaphore(1)
+PREVIEW_RENDER_VERSION = 19
 MAX_PREVIEW_CACHE_ENTRIES = 48
 JD_PHONE_HEIGHT_MM = 163.0
 JD_PHONE_LABEL = "iPhone 17 Pro Max"
+JD_MEASURE_COLOR = "#707070"
 
 
 SLOT_DEFINITIONS = [
@@ -1086,6 +1094,78 @@ def save_assets(session_id: str, asset_type: str, files: list[UploadFile]) -> li
     return saved
 
 
+def prepare_product_cutout(session_id: str, file: UploadFile) -> dict[str, str]:
+    """Create an optional transparent product image without adding it to the organizer inputs."""
+    with db_session() as conn:
+        exists = conn.execute("SELECT id FROM vip_organizer_sessions WHERE id = ?", (session_id,)).fetchone()
+    if not exists:
+        raise ValueError("整理会话已失效，请重新开始")
+    original_name = file.filename or "front.jpg"
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in ALLOWED_IMAGE_EXTENSIONS:
+        raise ValueError("请上传 JPG、PNG 或 WebP 图片")
+
+    prepared_id = uuid.uuid4().hex
+    prepared_dir = _session_result_dir(session_id) / "prepared" / prepared_id
+    prepared_dir.mkdir(parents=True, exist_ok=True)
+    source_path = prepared_dir / f"source{suffix}"
+    transparent_path = prepared_dir / "transparent.png"
+    gray_path = prepared_dir / "gray-preview.png"
+    try:
+        with source_path.open("wb") as output:
+            shutil.copyfileobj(file.file, output, length=UPLOAD_COPY_BUFFER_SIZE)
+        with Image.open(source_path) as source_image:
+            source_image.verify()
+        with Image.open(source_path) as source_image:
+            source = ImageOps.exif_transpose(source_image)
+            source.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+            source = source.convert("RGBA")
+        with _CUTOUT_SEMAPHORE:
+            with _CUTOUT_INFERENCE_SEMAPHORE:
+                model_matte = _predict_product_matte(source)
+            cutout = _prepared_product_cutout(source, model_matte=model_matte)
+        transparent = Image.new("RGBA", (800, 800), (255, 255, 255, 0))
+        rendered = ImageOps.contain(cutout, (704, 704), Image.Resampling.LANCZOS)
+        transparent.alpha_composite(
+            rendered,
+            ((transparent.width - rendered.width) // 2, (transparent.height - rendered.height) // 2),
+        )
+        transparent.save(transparent_path, format="PNG", optimize=True)
+        gray = Image.new("RGB", transparent.size, "#969895")
+        gray.paste(transparent.convert("RGB"), (0, 0), transparent.getchannel("A"))
+        gray.save(gray_path, format="PNG", optimize=True)
+        source_path.unlink(missing_ok=True)
+        with db_session() as conn:
+            conn.execute(
+                "UPDATE vip_organizer_sessions SET updated_at = ? WHERE id = ?",
+                (now_iso(), session_id),
+            )
+    except Exception:
+        shutil.rmtree(prepared_dir, ignore_errors=True)
+        raise
+
+    base_url = f"/api/vip-organizer/prepared/{session_id}/{prepared_id}"
+    return {
+        "prepared_id": prepared_id,
+        "transparent_url": f"{base_url}/transparent",
+        "gray_preview_url": f"{base_url}/gray",
+        "download_url": f"{base_url}/download",
+        "file_name": f"{Path(original_name).stem}-透明.png",
+    }
+
+
+def prepared_cutout_file(session_id: str, prepared_id: str, variant: str) -> Path:
+    if not _valid_session_id(session_id) or not re.fullmatch(r"[0-9a-f]{32}", prepared_id):
+        raise ValueError("抠图结果不存在")
+    if variant not in {"transparent", "gray", "download"}:
+        raise ValueError("抠图结果不存在")
+    file_name = "gray-preview.png" if variant == "gray" else "transparent.png"
+    path = _session_result_dir(session_id) / "prepared" / prepared_id / file_name
+    if not path.is_file():
+        raise ValueError("抠图结果不存在")
+    return path
+
+
 def asset_thumbnail(image_id: int) -> Path:
     rows = _uploaded_rows([image_id])
     if not rows:
@@ -1488,6 +1568,439 @@ def _product_cutout(source: Image.Image) -> Image.Image:
     cropped_mask = cv2.GaussianBlur(cropped_mask, (0, 0), 0.7)
     result = Image.fromarray(cropped_rgb, "RGB").convert("RGBA")
     result.putalpha(Image.fromarray(cropped_mask, "L"))
+    return result
+
+
+def _predict_product_matte(source: Image.Image) -> np.ndarray | None:
+    if not U2NETP_MODEL_PATH.exists() or not CUTOUT_WORKER_PATH.exists():
+        return None
+    configured_python = os.environ.get("SINO_CUTOUT_PYTHON", "").strip()
+    worker_python = Path(configured_python) if configured_python else Path(sys.executable)
+    if not worker_python.exists():
+        worker_python = Path(sys.executable)
+    with tempfile.TemporaryDirectory(prefix="sino-cutout-") as directory:
+        input_path = Path(directory) / "input.png"
+        output_path = Path(directory) / "matte.png"
+        source.convert("RGB").save(input_path, format="PNG", optimize=False)
+        environment = os.environ.copy()
+        environment.update({
+            "OMP_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+        })
+        try:
+            subprocess.run(
+                [
+                    str(worker_python),
+                    str(CUTOUT_WORKER_PATH),
+                    str(U2NETP_MODEL_PATH),
+                    str(input_path),
+                    str(output_path),
+                ],
+                check=True,
+                timeout=45,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+            )
+            with Image.open(output_path) as matte_image:
+                return np.asarray(matte_image.convert("L"), dtype=np.float32) / 255.0
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+
+
+def _prepared_product_cutout(
+    source: Image.Image,
+    model_matte: np.ndarray | None = None,
+) -> Image.Image:
+    """Create a cleaner export cutout for white/light studio product photos.
+
+    This stricter path is intentionally limited to the optional preparation
+    tool. Existing organizer templates keep their established cutout behavior.
+    """
+    image = ImageOps.exif_transpose(source).convert("RGBA")
+    if max(image.size) > 1600:
+        image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+    rgba = np.asarray(image).copy()
+    rgb = rgba[:, :, :3]
+    source_alpha = rgba[:, :, 3]
+    height, width = rgb.shape[:2]
+
+    if float(np.mean(source_alpha < 250)) > 0.01:
+        mask = source_alpha > 12
+        background_color = np.array([255.0, 255.0, 255.0], dtype=np.float32)
+    else:
+        edge = max(3, min(height, width) // 45)
+        border = np.vstack([
+            rgb[:edge, :].reshape(-1, 3),
+            rgb[-edge:, :].reshape(-1, 3),
+            rgb[:, :edge].reshape(-1, 3),
+            rgb[:, -edge:].reshape(-1, 3),
+        ])
+        background_color = np.median(border, axis=0).astype(np.float32)
+        lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+        background_lab = cv2.cvtColor(
+            np.uint8([[np.clip(background_color, 0, 255)]]),
+            cv2.COLOR_RGB2LAB,
+        )[0, 0].astype(np.float32)
+        lab_distance = np.linalg.norm(lab - background_lab, axis=2)
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        saturation = hsv[:, :, 1]
+        value = hsv[:, :, 2]
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        gradient_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gradient_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        gradient = cv2.magnitude(gradient_x, gradient_y)
+        if model_matte is not None:
+            model_matte = cv2.resize(
+                model_matte,
+                (width, height),
+                interpolation=cv2.INTER_CUBIC,
+            )
+            model_matte = np.clip(model_matte, 0.0, 1.0)
+
+        # Flood only light/neutral pixels connected to an outside edge. This
+        # removes the studio backdrop without opening holes inside the bag.
+        background_candidate = (
+            (lab_distance <= 20)
+            | ((lab_distance <= 48) & (saturation <= 30) & (value >= 185))
+        ).astype(np.uint8)
+        _, background_labels = cv2.connectedComponents(background_candidate, 8)
+        border_labels = np.unique(np.concatenate((
+            background_labels[0, :],
+            background_labels[-1, :],
+            background_labels[:, 0],
+            background_labels[:, -1],
+        )))
+        border_labels = border_labels[border_labels > 0]
+        connected_background = np.isin(background_labels, border_labels)
+        initial_foreground = (~connected_background).astype(np.uint8)
+
+        # Refine uncertain light edges with GrabCut. Strongly coloured and dark
+        # pixels are protected so chains, hardware and pale leather survive.
+        grabcut = np.full((height, width), cv2.GC_PR_BGD, dtype=np.uint8)
+        probable_foreground = initial_foreground > 0
+        if model_matte is not None:
+            probable_foreground |= model_matte >= 0.48
+        grabcut[probable_foreground] = cv2.GC_PR_FGD
+        sure_foreground = probable_foreground & (
+            (lab_distance >= 66)
+            | (saturation >= 48)
+            | (value <= 145)
+        )
+        if model_matte is not None:
+            sure_foreground |= model_matte >= 0.985
+        grabcut[sure_foreground] = cv2.GC_FGD
+        reliable_connected_background = connected_background & (
+            (lab_distance <= 12)
+            | ((saturation <= 12) & (value >= 247))
+        )
+        exact_studio_background = (
+            (lab_distance <= 5)
+            & (saturation <= 8)
+            & (value >= 248)
+        )
+        grabcut[reliable_connected_background | exact_studio_background] = cv2.GC_BGD
+        try:
+            cv2.grabCut(
+                cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
+                grabcut,
+                None,
+                np.zeros((1, 65), np.float64),
+                np.zeros((1, 65), np.float64),
+                3,
+                cv2.GC_INIT_WITH_MASK,
+            )
+            mask = np.isin(grabcut, (cv2.GC_FGD, cv2.GC_PR_FGD))
+        except cv2.error:
+            mask = probable_foreground
+
+        if model_matte is not None:
+            textured_model_foreground = (
+                (model_matte >= 0.72)
+                & ((gradient >= 8) | (lab_distance >= 7) | (saturation >= 10))
+            )
+            mask[connected_background & ~textured_model_foreground] = False
+            mask[exact_studio_background] = False
+
+        # GrabCut can shave off pale product edges that are close to a white
+        # backdrop. Protect narrow, high-gradient parts already found by the
+        # established organizer cutout while leaving broad white holes clear.
+        legacy = _product_cutout(image)
+        legacy_alpha = np.asarray(legacy.getchannel("A"))
+        if legacy_alpha.size:
+            legacy_full = np.zeros((height, width), dtype=np.uint8)
+            legacy_rgb = np.asarray(legacy.convert("RGB"))
+            match = cv2.matchTemplate(rgb, legacy_rgb, cv2.TM_SQDIFF_NORMED)
+            legacy_left, legacy_top = cv2.minMaxLoc(match)[2]
+            legacy_bottom = min(height, legacy_top + legacy_alpha.shape[0])
+            legacy_right = min(width, legacy_left + legacy_alpha.shape[1])
+            legacy_full[legacy_top:legacy_bottom, legacy_left:legacy_right] = legacy_alpha[
+                :legacy_bottom - legacy_top,
+                :legacy_right - legacy_left,
+            ]
+            distance_from_reliable_foreground = cv2.distanceTransform(
+                (~mask).astype(np.uint8),
+                cv2.DIST_L2,
+                3,
+            )
+            edge_protection = (
+                (legacy_full > 80)
+                & (distance_from_reliable_foreground <= max(4, min(height, width) * 0.007))
+                & ((gradient >= 10) | (lab_distance >= 7) | (value <= 247))
+            )
+            mask |= edge_protection
+
+        mask_u8 = mask.astype(np.uint8)
+        mask_u8 = cv2.morphologyEx(
+            mask_u8,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        )
+
+        # A studio floor shadow is normally a sparse neutral tail below the
+        # final dense product row. Remove that tail while keeping coloured
+        # straps and metal pieces which may extend below the bag body.
+        structural_foreground = mask_u8.astype(bool) & (
+            (saturation >= 35)
+            | (value <= 185)
+        )
+        structural_rows = structural_foreground.sum(axis=1)
+        broad_rows = structural_rows >= max(10, int(structural_rows.max() * 0.55))
+        broad_labels_count, broad_labels = cv2.connectedComponents(
+            broad_rows.astype(np.uint8)[:, None],
+            8,
+        )
+        broad_runs = [
+            np.flatnonzero(broad_labels[:, 0] == label)
+            for label in range(1, broad_labels_count)
+        ]
+        broad_runs = [run for run in broad_runs if run.size >= 3]
+        product_bottom_rows = max(broad_runs, key=lambda run: int(run[-1]), default=np.array([], dtype=int))
+        if product_bottom_rows.size:
+            dense_bottom = int(product_bottom_rows[-1])
+            central_material = mask_u8.astype(bool) & (
+                (saturation >= 24)
+                | (value <= 130)
+                | ((lab_distance >= 16) & (gradient >= 4))
+            )
+            material_column_bottoms = []
+            for column in range(width // 5, width * 4 // 5):
+                material_rows = np.flatnonzero(central_material[:, column])
+                if material_rows.size:
+                    material_column_bottoms.append(int(material_rows[-1]))
+            if len(material_column_bottoms) >= max(12, width // 10):
+                material_bottom = int(np.percentile(material_column_bottoms, 60))
+                dense_bottom = min(
+                    dense_bottom,
+                    material_bottom + max(2, height // 350),
+                )
+            if model_matte is not None:
+                model_column_bottoms = []
+                for column in range(width // 4, width * 3 // 4):
+                    model_rows = np.flatnonzero(model_matte[:, column] >= 0.95)
+                    if model_rows.size:
+                        model_column_bottoms.append(int(model_rows[-1]))
+                if model_column_bottoms:
+                    dense_bottom = min(
+                        dense_bottom,
+                        int(np.percentile(model_column_bottoms, 90)),
+                    )
+            yy = np.arange(height)[:, None]
+            nearby_rows = mask_u8[
+                max(0, dense_bottom - max(8, height // 80)):dense_bottom + 1
+            ]
+            nearby_xs = np.flatnonzero(nearby_rows.any(axis=0))
+            body_left = int(nearby_xs.min()) if nearby_xs.size else width // 4
+            body_right = int(nearby_xs.max()) if nearby_xs.size else width * 3 // 4
+            xx = np.arange(width)[None, :]
+            inside_body_width = (xx >= body_left) & (xx <= body_right)
+            gold_detail = (
+                (gradient >= 18)
+                & (saturation >= 25)
+                & (rgb[:, :, 0].astype(np.int16) >= rgb[:, :, 2].astype(np.int16) + 7)
+                & (rgb[:, :, 1].astype(np.int16) >= rgb[:, :, 2].astype(np.int16) + 2)
+            )
+            dark_detail = (gradient >= 18) & (value <= 125)
+            outside_colored_detail = (
+                ~inside_body_width
+                & (gradient >= 16)
+                & (saturation >= 28)
+            )
+            model_detail = np.zeros((height, width), dtype=bool)
+            if model_matte is not None:
+                model_detail = (
+                    (model_matte >= 0.82)
+                    & (gradient >= 18)
+                    & ((saturation >= 18) | (value <= 150))
+                )
+            detail_below_body = (
+                gold_detail
+                | dark_detail
+                | outside_colored_detail
+                | model_detail
+            )
+            shadow_tail = (yy > dense_bottom) & ~detail_below_body
+            mask_u8[shadow_tail] = 0
+
+            remaining_rows = np.flatnonzero(mask_u8.any(axis=1))
+            if remaining_rows.size:
+                floor_start = int(remaining_rows[-1]) - max(10, height // 18)
+                connected_floor_shadow = (
+                    (yy >= floor_start)
+                    & connected_background
+                    & (saturation <= 30)
+                    & (value >= 115)
+                    & (gradient <= 95)
+                    & ~(gold_detail | dark_detail | outside_colored_detail)
+                )
+                mask_u8[connected_floor_shadow] = 0
+
+                sample_top = height * 2 // 5
+                sample_bottom = height * 4 // 5
+                sample_left = width // 4
+                sample_right = width * 3 // 4
+                sample_mask = mask_u8[
+                    sample_top:sample_bottom,
+                    sample_left:sample_right,
+                ].astype(bool)
+                sample_saturation = saturation[
+                    sample_top:sample_bottom,
+                    sample_left:sample_right,
+                ][sample_mask]
+                sample_value = value[
+                    sample_top:sample_bottom,
+                    sample_left:sample_right,
+                ][sample_mask]
+                if sample_saturation.size:
+                    material_saturation = float(np.clip(
+                        np.median(sample_saturation) * 0.75,
+                        18,
+                        50,
+                    ))
+                    dark_product = bool(
+                        sample_value.size
+                        and float(np.median(sample_value)) <= 120
+                    )
+                    column_material = mask_u8.astype(bool) & (
+                        (saturation >= material_saturation)
+                        | (dark_product & (value <= 105))
+                        | gold_detail
+                    )
+                    material_rows = np.where(
+                        column_material,
+                        np.arange(height)[:, None],
+                        -1,
+                    )
+                    column_bottoms = material_rows.max(axis=0)
+                    smoothing_width = max(5, min(31, width // 80))
+                    if smoothing_width % 2 == 0:
+                        smoothing_width += 1
+                    padded_bottoms = np.pad(
+                        column_bottoms,
+                        smoothing_width // 2,
+                        mode="edge",
+                    )
+                    column_bottoms = np.median(
+                        np.lib.stride_tricks.sliding_window_view(
+                            padded_bottoms,
+                            smoothing_width,
+                        ),
+                        axis=1,
+                    ).astype(np.int32)
+                    below_column_material = (
+                        (column_bottoms[None, :] >= 0)
+                        & (yy > column_bottoms[None, :] + max(1, height // 800))
+                    )
+                    neutral_column_tail = (
+                        (yy >= floor_start)
+                        & below_column_material
+                        & mask_u8.astype(bool)
+                        & ~(
+                            gold_detail
+                            | (dark_product & dark_detail)
+                            | outside_colored_detail
+                        )
+                    )
+                    mask_u8[neutral_column_tail] = 0
+
+            # Shadows form broad, shallow islands under the product. Remove
+            # those islands while retaining narrow chain/hardware components.
+            tail = mask_u8.copy()
+            tail[:dense_bottom + 1, :] = 0
+            component_count, component_labels, component_stats, _ = cv2.connectedComponentsWithStats(tail, 8)
+            for component in range(1, component_count):
+                component_width = int(component_stats[component, cv2.CC_STAT_WIDTH])
+                component_height = int(component_stats[component, cv2.CC_STAT_HEIGHT])
+                component_area = int(component_stats[component, cv2.CC_STAT_AREA])
+                if (
+                    component_width >= max(12, width // 16)
+                    and component_height <= max(18, height // 45)
+                    and component_area >= max(30, width // 8)
+                ):
+                    mask_u8[component_labels == component] = 0
+        mask = mask_u8 > 0
+
+    ys, xs = np.where(mask)
+    if not len(xs):
+        return _product_cutout(image)
+    object_width = int(xs.max() - xs.min() + 1)
+    object_height = int(ys.max() - ys.min() + 1)
+    padding = max(12, int(max(object_width, object_height) * 0.012))
+    left = max(0, int(xs.min()) - padding)
+    top = max(0, int(ys.min()) - padding)
+    right = min(width, int(xs.max()) + padding + 1)
+    bottom = min(height, int(ys.max()) + padding + 1)
+
+    cropped_mask = mask[top:bottom, left:right].astype(np.uint8)
+    inside = cv2.distanceTransform(cropped_mask, cv2.DIST_L2, 3)
+    outside = cv2.distanceTransform(1 - cropped_mask, cv2.DIST_L2, 3)
+    alpha = np.clip((inside - outside) * 100.0 + 128.0, 0, 255).astype(np.uint8)
+    alpha = cv2.GaussianBlur(alpha, (0, 0), 0.45)
+
+    cropped_rgb = rgb[top:bottom, left:right].astype(np.float32)
+    if float(np.mean(source_alpha < 250)) <= 0.01:
+        cropped_lab_distance = lab_distance[top:bottom, left:right]
+        cropped_saturation = saturation[top:bottom, left:right]
+        cropped_value = value[top:bottom, left:right]
+        boundary = (inside <= 4.0) & (outside <= 4.0)
+        neutral_fringe = boundary & (cropped_saturation <= 32) & (cropped_value >= 165)
+        fringe_strength = np.clip((cropped_lab_distance - 4.0) / 20.0, 0.0, 1.0)
+        alpha_float = alpha.astype(np.float32)
+        alpha_float[neutral_fringe] *= fringe_strength[neutral_fringe]
+        alpha = alpha_float.astype(np.uint8)
+
+        # Remove the light backdrop mixed into semi-transparent edge pixels.
+        edge_alpha = alpha.astype(np.float32) / 255.0
+        semi = (edge_alpha > 0.04) & (edge_alpha < 0.98)
+        recovered = (
+            cropped_rgb - background_color[None, None, :] * (1.0 - edge_alpha[:, :, None])
+        ) / np.maximum(edge_alpha[:, :, None], 0.08)
+        cropped_rgb[semi] = np.clip(recovered, 0, 255)[semi]
+
+        interior_seed = inside >= 5.0
+        if np.any(interior_seed) and np.any(neutral_fringe):
+            _, nearest_labels = cv2.distanceTransformWithLabels(
+                (~interior_seed).astype(np.uint8),
+                cv2.DIST_L2,
+                5,
+                labelType=cv2.DIST_LABEL_PIXEL,
+            )
+            interior_colors = cropped_rgb[interior_seed]
+            nearest_indices = np.clip(
+                nearest_labels.astype(np.int64) - 1,
+                0,
+                len(interior_colors) - 1,
+            )
+            nearest_colors = interior_colors[nearest_indices]
+            edge_mix = neutral_fringe[:, :, None].astype(np.float32) * 0.72
+            cropped_rgb = (
+                cropped_rgb * (1.0 - edge_mix)
+                + nearest_colors * edge_mix
+            )
+
+    result = Image.fromarray(np.clip(cropped_rgb, 0, 255).astype(np.uint8), "RGB").convert("RGBA")
+    result.putalpha(Image.fromarray(alpha, "L"))
     return result
 
 
@@ -2058,10 +2571,14 @@ def _info_width_ruler_geometry(
             round(center[1] + (point[1] - center[1]) * scale + offset[1]),
         )
 
+    delta_x = end[0] - start[0]
+    delta_y = end[1] - start[1]
+    length = max(1.0, (delta_x ** 2 + delta_y ** 2) ** 0.5)
+    perpendicular = (-delta_y / length * 9.0, delta_x / length * 9.0)
     segments = [
         (start, end),
-        ((start[0] - 6, start[1] - 8), (start[0] + 5, start[1] + 7)),
-        ((end[0] - 5, end[1] - 7), (end[0] + 6, end[1] + 8)),
+        ((start[0] - perpendicular[0], start[1] - perpendicular[1]), (start[0] + perpendicular[0], start[1] + perpendicular[1])),
+        ((end[0] - perpendicular[0], end[1] - perpendicular[1]), (end[0] + perpendicular[0], end[1] + perpendicular[1])),
     ]
     return {
         "segments": [(transform(start), transform(end)) for start, end in segments],
@@ -2136,7 +2653,7 @@ def _dimension_value_mm(value: str | None) -> float | None:
     if not match:
         return None
     number = float(match.group(0))
-    if "mm" not in normalized:
+    if "cm" in normalized:
         number *= 10
     return number
 
@@ -2199,9 +2716,7 @@ def _info_page(
         body = _paste_info_product(image, product_image, adjustment)
         if not _has_manual_layout_adjustment(adjustment):
             base_body = body
-    linked_rulers = normalized["product_show_ruler"]
-    ruler_body = body if linked_rulers else base_body
-    ruler = _info_ruler_geometry(ruler_body)
+    ruler = _info_ruler_geometry(base_body)
     width_ruler = _info_width_ruler_geometry(base_body, adjustment)
 
     line_color = "#8a8a8a"
@@ -2241,8 +2756,16 @@ def _info_page(
         _font(18),
     )
 
+    ruler_layer = Image.new("RGBA", (image.width * 4, image.height * 4), (0, 0, 0, 0))
+    ruler_draw = ImageDraw.Draw(ruler_layer)
     for start, end in width_ruler["segments"]:
-        draw.line((start, end), fill=line_color, width=2)
+        ruler_draw.line(
+            (start[0] * 4, start[1] * 4, end[0] * 4, end[1] * 4),
+            fill=line_color,
+            width=8,
+        )
+    ruler_layer = ruler_layer.resize(image.size, Image.Resampling.LANCZOS)
+    image.paste(ruler_layer, (0, 0), ruler_layer)
     _draw_rotated_text(
         image,
         _dimension_mm(info.get("product_width") or ""),
@@ -2280,7 +2803,7 @@ def _detail_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None
     draw.text(((750 - (title_box[2] - title_box[0])) / 2, 70), title, font=title_font, fill="#c4c4c4")
     box = (52, 181, 695, 704)
     if _has_manual_layout_adjustment(adjustment):
-        clip_box = _expanded_safe_box(box, canvas.size, padding_ratio=0.14)
+        clip_box = (30, 135, 720, 720)
     elif _has_light_studio_border(source):
         clip_box = _expanded_safe_box(box, canvas.size)
     else:
@@ -2333,12 +2856,23 @@ def _multi_angle_page(
 
 def _save_png_30(image: Image.Image, path: Path) -> None:
     canvas = _normalized_product_page(image, transparent=True)
-    canvas.save(path, optimize=True)
+    _save_bounded_png(canvas, path)
+
+
+def _save_bounded_png(image: Image.Image, path: Path) -> None:
+    image.save(path, optimize=True)
+    if path.stat().st_size > 600_000:
+        for colors in (256, 192, 128, 96, 64):
+            image.quantize(colors=colors).save(path, optimize=True)
+            if path.stat().st_size <= 600_000:
+                break
+    if path.stat().st_size < 100_000:
+        padding = PngImagePlugin.PngInfo()
+        padding.add_text("size-padding", "0" * (100_000 - path.stat().st_size + 128), zip=False)
+        image.save(path, optimize=True, pnginfo=padding)
     size = path.stat().st_size
-    if size < 100_000:
-        canvas.save(path, compress_level=0)
-    elif size > 600_000:
-        canvas.quantize(colors=256).save(path, optimize=True)
+    if not 100_000 <= size <= 600_000:
+        raise ValueError("30.png 文件大小无法控制在 100KB 到 600KB")
 
 
 @lru_cache(maxsize=8)
@@ -2649,7 +3183,7 @@ def _draw_jd_dimension_bar(
     vertical_label_side: str = "left",
 ) -> None:
     draw = ImageDraw.Draw(canvas)
-    color = "#777777"
+    color = JD_MEASURE_COLOR
     stroke = max(2, round(min(canvas.size) / 400))
     cap = max(8, round(min(canvas.size) * 0.014))
     font = _font(max(14, round(min(canvas.size) * 0.022)))
@@ -2865,7 +3399,7 @@ def _jd_size_comparison_page(
     )
 
     ruler_gap = max(28, round(width * 0.045))
-    product_ruler_body = rendered_body if normalized["product_show_ruler"] else base_layout["body_box"]
+    product_ruler_body = base_layout["body_box"]
     horizontal_y = min(height - 70, product_ruler_body[3] + ruler_gap)
     length_start, length_end = _transform_ruler_segment(
         (product_ruler_body[0], horizontal_y),
@@ -2955,7 +3489,7 @@ def _jd_size_comparison_page(
         (round((phone_box[0] + phone_box[2] - (label_box[2] - label_box[0])) / 2), phone_box[3] + 12),
         phone_label,
         font=label_font,
-        fill="#555555",
+        fill=JD_MEASURE_COLOR,
     )
     return canvas
 
@@ -3126,12 +3660,7 @@ def _render_slot_image(
 
 def _save_slot_image(image: Image.Image, file_name: str, output: Path) -> None:
     if file_name.endswith(".png"):
-        image.save(output, optimize=True)
-        size = output.stat().st_size
-        if size < 100_000:
-            image.save(output, compress_level=0)
-        elif size > 600_000:
-            image.quantize(colors=256).save(output, optimize=True)
+        _save_bounded_png(image, output)
         return
     if file_name in {"4.jpg", "15.jpg", "604.jpg", "605.jpg"}:
         quality = 100

@@ -167,15 +167,16 @@ def test_jd_shape_profiles_cover_extreme_and_common_handbag_proportions():
 
 def test_jd_phone_comparison_waits_for_length_and_height():
     assert not service._jd_size_dimensions_ready({})
-    assert not service._jd_size_dimensions_ready({"product_length": "20"})
-    assert service._jd_size_dimensions_ready({"product_length": "20", "product_height": "14"})
+    assert not service._jd_size_dimensions_ready({"product_length": "200"})
+    assert service._jd_size_dimensions_ready({"product_length": "200", "product_height": "140"})
 
 
 def test_vip_info_page_waits_for_length_and_height_and_formats_mm():
     assert not service._vip_info_ready({})
-    assert not service._vip_info_ready({"product_length": "19.5"})
-    assert service._vip_info_ready({"product_length": "19.5", "product_height": "14"})
-    assert service._dimension_mm("19.5") == "195mm"
+    assert not service._vip_info_ready({"product_length": "195"})
+    assert service._vip_info_ready({"product_length": "195", "product_height": "140"})
+    assert service._dimension_mm("195") == "195mm"
+    assert service._dimension_mm("19.5cm") == "195mm"
     assert service._dimension_mm("163mm") == "163mm"
 
 
@@ -331,7 +332,7 @@ def test_vip_info_centers_the_bag_body_instead_of_the_handle_layer():
 
 
 def test_vip_info_rulers_remain_visible_in_both_adjustment_modes():
-    info = {"product_length": "19.5", "product_width": "5.5", "product_height": "14"}
+    info = {"product_length": "195", "product_width": "55", "product_height": "140"}
     source = _vip_info_test_source()
     adjustment = {"zoom": 1.1, "offset_x": 0.08, "offset_y": -0.04}
 
@@ -341,7 +342,7 @@ def test_vip_info_rulers_remain_visible_in_both_adjustment_modes():
     fixed_ruler = service._info_ruler_geometry(base_body)
 
     assert product_only.getpixel((fixed_ruler["left"] + 5, fixed_ruler["horizontal_y"])) != (255, 255, 255)
-    assert linked.getpixel((fixed_ruler["left"] + 5, fixed_ruler["horizontal_y"])) == (255, 255, 255)
+    assert np.array_equal(np.asarray(product_only), np.asarray(linked))
 
 
 def test_jd_product_zoom_keeps_one_baseline_transform_for_every_shape():
@@ -353,12 +354,12 @@ def test_jd_product_zoom_keeps_one_baseline_transform_for_every_shape():
     ]
     for size, body_box in cases:
         layer = Image.new("RGBA", size, (0, 0, 0, 0))
-        base = service._jd_size_product_layout(layer, body_box, (800, 800), {"product_length": "20", "product_height": "14"}, None)
+        base = service._jd_size_product_layout(layer, body_box, (800, 800), {"product_length": "200", "product_height": "140"}, None)
         zoomed = service._jd_size_product_layout(
             layer,
             body_box,
             (800, 800),
-            {"product_length": "20", "product_height": "14"},
+            {"product_length": "200", "product_height": "140"},
             {"zoom": 1.1},
         )
 
@@ -386,7 +387,7 @@ def test_jd_product_movement_does_not_move_the_phone():
     draw = ImageDraw.Draw(source)
     draw.arc((120, 15, 300, 205), 180, 360, fill=(40, 40, 40, 255), width=12)
     draw.rounded_rectangle((45, 130, 375, 300), radius=18, fill=(150, 160, 175, 255))
-    info = {"product_length": "20", "product_height": "14"}
+    info = {"product_length": "200", "product_height": "140"}
     phone_positions: list[tuple[int, int, int]] = []
 
     def capture_phone(_canvas, center_x, top, height):
@@ -411,7 +412,7 @@ def test_jd_manual_product_movement_can_cross_the_automatic_logo_clearance():
     draw.arc((70, 10, 230, 250), 180, 360, fill=(40, 40, 40, 255), width=12)
     draw.rounded_rectangle((45, 145, 255, 410), radius=18, fill=(150, 160, 175, 255))
     body_box = service._jd_product_body_bbox(source)
-    info = {"product_length": "20", "product_height": "14"}
+    info = {"product_length": "200", "product_height": "140"}
 
     automatic = service._jd_size_product_layout(source, body_box, (800, 800), info, None)
     raised = service._jd_size_product_layout(
@@ -432,7 +433,7 @@ def test_jd_phone_alignment_uses_the_same_automatic_product_baseline():
     draw = ImageDraw.Draw(source)
     draw.arc((70, 10, 230, 250), 180, 360, fill=(40, 40, 40, 255), width=12)
     draw.rounded_rectangle((45, 145, 255, 410), radius=18, fill=(150, 160, 175, 255))
-    info = {"product_length": "20", "product_height": "14"}
+    info = {"product_length": "200", "product_height": "140"}
     cutout = service._product_cutout(source)
     body_box = service._jd_product_body_bbox(cutout)
     baseline = service._jd_size_product_layout(cutout, body_box, (800, 800), info, None)
@@ -465,7 +466,7 @@ def test_jd_size_rulers_stay_visible_when_adjusting_objects_only():
     draw = ImageDraw.Draw(source)
     draw.arc((120, 15, 300, 205), 180, 360, fill=(40, 40, 40, 255), width=12)
     draw.rounded_rectangle((45, 130, 375, 300), radius=18, fill=(150, 160, 175, 255))
-    info = {"product_length": "20", "product_height": "14"}
+    info = {"product_length": "200", "product_height": "140"}
 
     linked = service._jd_size_comparison_page(
         source,

@@ -1,7 +1,46 @@
 import { CheckCircle2, Crop, Download, FileImage, LoaderCircle, Move, RefreshCw, RotateCcw, Save, Smartphone, UploadCloud, X, ZoomIn, ZoomOut } from "lucide-react";
-import type { DragEvent } from "react";
+import type { ClipboardEvent, DragEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
+
+const ORGANIZER_BROWSER_IMAGE_MAX_EDGE = 2400;
+const ORGANIZER_BROWSER_JPEG_QUALITY = 0.88;
+const ORGANIZER_BROWSER_PHOTO = /\.(?:jpe?g|webp)$/i;
+
+function canvasJpeg(canvas: HTMLCanvasElement, quality: number): Promise<Blob | null> {
+  return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+}
+
+async function prepareOrganizerPhoto(file: File): Promise<File> {
+  if (!ORGANIZER_BROWSER_PHOTO.test(file.name) || typeof window.createImageBitmap !== "function") return file;
+  let bitmap: ImageBitmap | null = null;
+  try {
+    bitmap = await window.createImageBitmap(file, { imageOrientation: "from-image" });
+    const longest = Math.max(bitmap.width, bitmap.height);
+    if (longest <= ORGANIZER_BROWSER_IMAGE_MAX_EDGE && file.size <= 6 * 1024 * 1024) return file;
+    const scale = Math.min(1, ORGANIZER_BROWSER_IMAGE_MAX_EDGE / longest);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return file;
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await canvasJpeg(canvas, ORGANIZER_BROWSER_JPEG_QUALITY);
+    canvas.width = 1;
+    canvas.height = 1;
+    if (!blob || blob.size >= file.size) return file;
+    const stem = file.name.replace(/\.[^.]+$/, "").slice(0, 120) || "image";
+    return new File([blob], `${stem}.jpg`, { type: "image/jpeg", lastModified: file.lastModified });
+  } catch {
+    return file;
+  } finally {
+    bitmap?.close();
+  }
+}
 
 type UploadItem = {
   image_id: number;
@@ -10,6 +49,14 @@ type UploadItem = {
   original_url?: string;
   width: number;
   height: number;
+};
+
+type PreparedCutout = {
+  prepared_id: string;
+  transparent_url: string;
+  gray_preview_url: string;
+  download_url: string;
+  file_name: string;
 };
 
 type LogoColor = "black" | "white";
@@ -169,6 +216,31 @@ function withTargetOffset(draft: ImageAdjustment, target: AdjustmentTarget, x: n
   return { ...draft, offset_x: x, offset_y: y };
 }
 
+function withLinkedProductOffset(draft: ImageAdjustment, x: number, y: number): ImageAdjustment {
+  const deltaX = x - draft.offset_x;
+  const deltaY = y - draft.offset_y;
+  return {
+    ...draft,
+    offset_x: x,
+    offset_y: y,
+    length_ruler_offset_x: (draft.length_ruler_offset_x || 0) + deltaX,
+    length_ruler_offset_y: (draft.length_ruler_offset_y || 0) + deltaY,
+    height_ruler_offset_x: (draft.height_ruler_offset_x || 0) + deltaX,
+    height_ruler_offset_y: (draft.height_ruler_offset_y || 0) + deltaY
+  };
+}
+
+function withLinkedProductScale(draft: ImageAdjustment, scale: number): ImageAdjustment {
+  const currentScale = Math.max(0.01, draft.zoom);
+  const ratio = scale / currentScale;
+  return {
+    ...draft,
+    zoom: scale,
+    length_ruler_scale: Math.max(0.5, Math.min(2, (draft.length_ruler_scale || 1) * ratio)),
+    height_ruler_scale: Math.max(0.5, Math.min(2, (draft.height_ruler_scale || 1) * ratio))
+  };
+}
+
 function isManuallyConfirmedSlot(slot: Slot) {
   return slot.reason.includes("已由设计师人工确认")
     || slot.reason.includes("已同步使用同一张模特图");
@@ -290,6 +362,9 @@ function slotEditorSafeAreaLayout(slot: Slot, platform: OrganizerPlatform, sourc
   }
   if (platform === "jd" && slot.file_name === "5.jpg") {
     return { x: 0.04, y: 0.04, width: 0.92, height: 0.92 };
+  }
+  if (platform === "vip" && ["604.jpg", "605.jpg"].includes(slot.file_name)) {
+    return { x: 0.04, y: 0.18, width: 0.92, height: 0.78 };
   }
   if (["2.jpg", "3.jpg", "4.jpg"].includes(slot.file_name) || slot.file_name.endsWith(".png")) {
     return { x: 0.04, y: 0.04, width: 0.92, height: 0.92 };
@@ -769,10 +844,20 @@ function infoWidthRulerGeometry(baseBody: PixelBounds, draft: ImageAdjustment) {
     x: center.x + (point.x - center.x) * scale + offset.x,
     y: center.y + (point.y - center.y) * scale + offset.y
   });
+  const deltaX = end.x - start.x;
+  const deltaY = end.y - start.y;
+  const length = Math.max(1, Math.hypot(deltaX, deltaY));
+  const perpendicular = { x: -deltaY / length * 9, y: deltaX / length * 9 };
   const segments = [
     [start, end],
-    [{ x: start.x - 6, y: start.y - 8 }, { x: start.x + 5, y: start.y + 7 }],
-    [{ x: end.x - 5, y: end.y - 7 }, { x: end.x + 6, y: end.y + 8 }]
+    [
+      { x: start.x - perpendicular.x, y: start.y - perpendicular.y },
+      { x: start.x + perpendicular.x, y: start.y + perpendicular.y }
+    ],
+    [
+      { x: end.x - perpendicular.x, y: end.y - perpendicular.y },
+      { x: end.x + perpendicular.x, y: end.y + perpendicular.y }
+    ]
   ];
   return {
     segments: segments.map(([start, end]) => [transform(start), transform(end)]),
@@ -862,10 +947,10 @@ function jdProductGeometry(
 ) {
   const bodyWidth = Math.max(1, layer.body.right - layer.body.left);
   const bodyHeight = Math.max(1, layer.body.bottom - layer.body.top);
-  const lengthMm = (Number.parseFloat(productInfo.product_length || "") || 20) * 10;
+  const lengthMm = Number.parseFloat(productInfo.product_length || "") || 200;
   const providedHeight = Number.parseFloat(productInfo.product_height || "");
   const heightMm = Number.isFinite(providedHeight) && providedHeight > 0
-    ? providedHeight * 10
+    ? providedHeight
     : Math.max(60, lengthMm * bodyHeight / bodyWidth);
   const profile = jdProductShapeProfile(bodyWidth, bodyHeight, lengthMm / Math.max(1, heightMm));
   const preferredBodyWidth = output.width * profile.preferredWidth * Math.max(0.82, Math.min(1.08, lengthMm / 205));
@@ -964,8 +1049,8 @@ function drawCanvasRuler(
 ) {
   const cap = Math.max(7, output.width * 0.011);
   context.save();
-  context.strokeStyle = "#777";
-  context.fillStyle = "#666";
+  context.strokeStyle = "#707070";
+  context.fillStyle = "#707070";
   context.lineWidth = Math.max(1, output.width * 0.002);
   context.font = `500 ${Math.max(12, Math.round(output.width * 0.017))}px sans-serif`;
   context.textAlign = "center";
@@ -1033,9 +1118,9 @@ function drawJdComparisonPreview(
   const rulerGap = Math.max(28, output.width * 0.045);
   const lengthValue = Number.parseFloat(productInfo.product_length || "");
   const heightValue = Number.parseFloat(productInfo.product_height || "");
-  const lengthLabel = Number.isFinite(lengthValue) ? `${Math.round(lengthValue * 10)}mm` : "200mm";
-  const heightLabel = Number.isFinite(heightValue) ? `${Math.round(heightValue * 10)}mm` : `${Math.round(geometry.heightMm)}mm`;
-  const productRulerBody = draft.product_show_ruler !== false ? geometry.body : baseGeometry.body;
+  const lengthLabel = Number.isFinite(lengthValue) ? `${Math.round(lengthValue)}mm` : "200mm";
+  const heightLabel = Number.isFinite(heightValue) ? `${Math.round(heightValue)}mm` : `${Math.round(geometry.heightMm)}mm`;
+  const productRulerBody = baseGeometry.body;
   const horizontalY = Math.min(output.height - 58, productRulerBody.bottom + rulerGap);
   const verticalX = Math.max(output.width * 0.04, productRulerBody.left - rulerGap);
   const lengthRuler = transformCanvasRulerSegment(
@@ -1102,7 +1187,7 @@ function drawJdComparisonPreview(
     true
   );
   context.save();
-  context.fillStyle = "#666";
+  context.fillStyle = "#707070";
   context.font = `500 ${Math.max(12, Math.round(output.width * 0.017))}px sans-serif`;
   context.textAlign = "center";
   context.fillText("iPhone 17 Pro Max", phone.left + phone.width / 2, phone.top + phone.height + 22);
@@ -1150,6 +1235,10 @@ function LiveSlotPreview({ sourceUrl, compositePrimaryUrl, templateUrl, slot, dr
       context.fillStyle = slot.file_name === "5.jpg" && platform === "jd" ? "#f3f3f3" : "#fff";
       context.fillRect(0, 0, output.width, output.height);
       if (template) context.drawImage(template, 0, 0, output.width, output.height);
+      if (platform === "vip" && ["604.jpg", "605.jpg"].includes(slot.file_name)) {
+        context.fillStyle = "#fff";
+        context.fillRect(0, output.height * 0.18, output.width, output.height * 0.82);
+      }
       if (platform === "jd" && slot.file_name === "5.jpg") {
         drawJdComparisonPreview(context, output, image, sourceUrl, phoneReference, logoReference, draft, productInfo);
         drawAdjustmentGuide(context, output, slot, platform, sourceIndex, targetFolder);
@@ -1337,8 +1426,7 @@ function LiveSlotPreview({ sourceUrl, compositePrimaryUrl, templateUrl, slot, dr
           right: baseDrawX + (baseMeasuredRight - baseCropLeft) / Math.max(1, baseCropRight - baseCropLeft) * baseDrawWidth,
           bottom: baseDrawY + (baseMeasuredBottom - baseCropTop) / Math.max(1, baseCropBottom - baseCropTop) * baseDrawHeight
         } : { left: baseDrawX, top: baseDrawY, right: baseDrawX + baseDrawWidth, bottom: baseDrawY + baseDrawHeight };
-        const linkedRulers = draft.product_show_ruler !== false;
-        const ruler = infoRulerGeometry(linkedRulers ? adjustedBody : baseBody);
+        const ruler = infoRulerGeometry(baseBody);
         const widthRuler = infoWidthRulerGeometry(baseBody, draft);
         const lengthRuler = transformCanvasRulerSegment(
           { x: ruler.left, y: ruler.horizontalY },
@@ -1359,7 +1447,7 @@ function LiveSlotPreview({ sourceUrl, compositePrimaryUrl, templateUrl, slot, dr
         const lengthValue = Number.parseFloat(productInfo.product_length || "");
         const widthValue = Number.parseFloat(productInfo.product_width || "");
         const heightValue = Number.parseFloat(productInfo.product_height || "");
-        const dimensionLabel = (value: number) => Number.isFinite(value) ? `${Math.round(value * 10)}mm` : "--mm";
+        const dimensionLabel = (value: number) => Number.isFinite(value) ? `${Math.round(value)}mm` : "--mm";
         context.save();
         context.strokeStyle = lineColor;
         context.fillStyle = "#555";
@@ -1563,6 +1651,7 @@ function SlotAdjustmentEditor({
   const [holdExactPreview, setHoldExactPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const [cropMode, setCropMode] = useState(false);
   const isPhoneComparison = platform === "jd" && slot.file_name === "5.jpg";
   const isPhoneObjectEditor = isPhoneComparison && initialMoveTarget === "phone";
@@ -1588,11 +1677,29 @@ function SlotAdjustmentEditor({
   const previewRequestRef = useRef(0);
   const previewAbortRef = useRef<AbortController | null>(null);
   const moveTargetRef = useRef<AdjustmentTarget>("product");
+  const linkedProductRulersRef = useRef(false);
 
   const activeMoveTarget: AdjustmentTarget = isInfoPage
     ? (infoMoveTarget === "product_rulers" ? "product" : infoMoveTarget)
     : moveTarget;
   moveTargetRef.current = activeMoveTarget;
+  linkedProductRulersRef.current = activeMoveTarget === "product" && (
+    isInfoPage
+      ? infoMoveTarget === "product_rulers"
+      : isPhoneComparison && draft.product_show_ruler !== false
+  );
+
+  function updateTargetScale(current: ImageAdjustment, target: AdjustmentTarget, scale: number) {
+    return target === "product" && linkedProductRulersRef.current
+      ? withLinkedProductScale(current, scale)
+      : withTargetScale(current, target, scale);
+  }
+
+  function updateTargetOffset(current: ImageAdjustment, target: AdjustmentTarget, x: number, y: number) {
+    return target === "product" && linkedProductRulersRef.current
+      ? withLinkedProductOffset(current, x, y)
+      : withTargetOffset(current, target, x, y);
+  }
 
   function slotWithDraft(nextDraft: ImageAdjustment) {
     const adjustments = [...(slot.adjustments || [])];
@@ -1708,7 +1815,7 @@ function SlotAdjustmentEditor({
       const target = moveTargetRef.current;
       const maximum = target === "product" ? 4 : target === "phone" ? 1.8 : 2;
       const nextScale = Math.max(0.5, Math.min(maximum, Math.round((targetScale(current, target) + delta) * 100) / 100));
-      applyDraft(withTargetScale(current, target, nextScale));
+      applyDraft(updateTargetScale(current, target, nextScale));
     };
     stage.addEventListener("wheel", handleWheel, { passive: false });
     return () => stage.removeEventListener("wheel", handleWheel);
@@ -1818,7 +1925,7 @@ function SlotAdjustmentEditor({
     const current = draftRef.current;
     const maximum = activeMoveTarget === "product" ? 4 : activeMoveTarget === "phone" ? 1.8 : 2;
     const nextScale = Math.max(0.5, Math.min(maximum, Math.round((targetScale(current, activeMoveTarget) + delta) * 100) / 100));
-    applyDraft(withTargetScale(current, activeMoveTarget, nextScale));
+    applyDraft(updateTargetScale(current, activeMoveTarget, nextScale));
   }
 
   function reset() {
@@ -1832,7 +1939,7 @@ function SlotAdjustmentEditor({
       if (activeMoveTarget === "phone") next = { ...next, phone_alignment: "bottom", phone_show_ruler: false };
       applyDraft(next);
     } else if (isPhoneComparison || isInfoPage) {
-      applyDraft({
+      const resetProduct = {
         ...draftRef.current,
         zoom: DEFAULT_ADJUSTMENT.zoom,
         offset_x: DEFAULT_ADJUSTMENT.offset_x,
@@ -1844,7 +1951,16 @@ function SlotAdjustmentEditor({
         product_show_ruler: isInfoPage
           ? infoMoveTarget === "product_rulers"
           : draftRef.current.product_show_ruler
-      });
+      };
+      applyDraft(linkedProductRulersRef.current ? {
+        ...resetProduct,
+        length_ruler_scale: 1,
+        length_ruler_offset_x: 0,
+        length_ruler_offset_y: 0,
+        height_ruler_scale: 1,
+        height_ruler_offset_x: 0,
+        height_ruler_offset_y: 0
+      } : resetProduct);
     } else {
       applyDraft({ ...DEFAULT_ADJUSTMENT });
     }
@@ -1869,6 +1985,7 @@ function SlotAdjustmentEditor({
   }
 
   async function saveAdjustment() {
+    flushPendingMove();
     const currentDraft = draftRef.current;
     let previewUrl = renderedPreviewRef.current;
     if (syncedVersionRef.current !== draftVersionRef.current) {
@@ -1877,9 +1994,20 @@ function SlotAdjustmentEditor({
     if (previewUrl) onSave(currentDraft, logoColorRef.current, previewUrl);
   }
 
+  function requestClose() {
+    flushPendingMove();
+    const changed = draftVersionRef.current > 0
+      || logoColorRef.current !== (slot.logo_color === "white" ? "white" : "black");
+    if (changed) {
+      setShowCloseConfirm(true);
+      return;
+    }
+    onClose();
+  }
+
   return (
     <div className="slot-adjustment-modal" role="dialog" aria-modal="true" aria-label={`调整 ${slot.file_name}`} onMouseDown={(event) => {
-      if (event.target === event.currentTarget) onClose();
+      if (event.target === event.currentTarget) requestClose();
     }}>
       <section className="slot-adjustment-dialog">
         <header>
@@ -1887,8 +2015,14 @@ function SlotAdjustmentEditor({
             <strong>{slot.file_name} · {slot.title}</strong>
             <span>{slot.file_name === "606.jpg" ? `正在调整来源 ${sourceIndex + 1}` : isPhoneComparison ? `正在调整${moveTarget === "phone" ? "手机" : moveTarget === "phone_ruler" ? "手机高标线" : moveTarget === "length_ruler" ? "商品长标线" : moveTarget === "height_ruler" ? "商品高标线" : "商品图"}` : isInfoPage ? `正在调整${infoMoveTarget === "width_ruler" ? "宽标线" : infoMoveTarget === "length_ruler" ? "长标线" : infoMoveTarget === "height_ruler" ? "高标线" : infoMoveTarget === "product" ? "商品图" : "商品图和长高标线"}` : "当前输出位置独立调整"}</span>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} title="关闭"><X size={21} /></button>
+          <button type="button" className="icon-button" onClick={requestClose} title="关闭"><X size={21} /></button>
         </header>
+
+        {showCloseConfirm && <div className="slot-close-confirm" role="alertdialog" aria-label="未保存调整提示">
+          <div><strong>调整尚未保存</strong><span>保存会生成最终预览并退出；右上角 × 会放弃本次调整。</span></div>
+          <button type="button" className="primary" disabled={busy} onClick={() => void saveAdjustment()}><Save size={17} />保存并退出</button>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="不保存并退出" title="不保存并退出"><X size={20} /></button>
+        </div>}
 
         <div className="slot-adjustment-workspace">
           <div className="slot-adjustment-source">
@@ -1949,7 +2083,7 @@ function SlotAdjustmentEditor({
                 const bounds = event.currentTarget.getBoundingClientRect();
                 const nextOffsetX = Math.max(-1.5, Math.min(1.5, start.offsetX + (event.clientX - start.x) / bounds.width));
                 const nextOffsetY = Math.max(-1.5, Math.min(1.5, start.offsetY + (event.clientY - start.y) / bounds.height));
-                pendingMoveRef.current = withTargetOffset(draftRef.current, start.target, nextOffsetX, nextOffsetY);
+                pendingMoveRef.current = updateTargetOffset(draftRef.current, start.target, nextOffsetX, nextOffsetY);
                 if (moveFrameRef.current === null) {
                   moveFrameRef.current = window.requestAnimationFrame(() => {
                     moveFrameRef.current = null;
@@ -2067,19 +2201,13 @@ function SlotAdjustmentEditor({
             </button>
           </div>}
           <button type="button" onClick={reset}><RotateCcw size={18} />恢复自动</button>
-          <button
-            type="button"
-            className={!previewSynced ? "confirm-preview" : ""}
-            disabled={busy || previewSynced}
-            onClick={() => void refreshPreview(draftRef.current, draftVersionRef.current)}
-          ><CheckCircle2 size={18} />{previewSynced ? "预览已确认" : "确认预览"}</button>
           <span className="slot-drag-hint"><Move size={16} />位置 {
             Math.round(targetOffset(draft, activeMoveTarget).x * 100)
           } / {
             Math.round(targetOffset(draft, activeMoveTarget).y * 100)
           }</span>
-          {!previewSynced && <span className="slot-preview-pending">调整后请先确认预览</span>}
-          <button type="button" className="primary" disabled={busy || !previewSynced} onClick={() => void saveAdjustment()}><Save size={18} />保存调整</button>
+          {!previewSynced && <span className="slot-preview-pending">保存时会自动生成精确预览</span>}
+          <button type="button" className="primary" disabled={busy} onClick={() => void saveAdjustment()}><Save size={18} />{busy ? "正在保存" : "保存并退出"}</button>
         </div>
         {error && <div className="alert warning">{error}</div>}
       </section>
@@ -2110,6 +2238,9 @@ export default function VipOrganizer() {
   const [analysisConfigs, setAnalysisConfigs] = useState<any[]>([]);
   const [analysisConfigId, setAnalysisConfigId] = useState<number | "">("");
   const [busy, setBusy] = useState(false);
+  const [cutoutBusy, setCutoutBusy] = useState(false);
+  const [cutoutDragging, setCutoutDragging] = useState(false);
+  const [preparedCutout, setPreparedCutout] = useState<PreparedCutout | null>(null);
   const [message, setMessage] = useState("");
   const [slotPreviews, setSlotPreviews] = useState<Record<string, string>>({});
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -2157,7 +2288,7 @@ export default function VipOrganizer() {
       .map((value) => value.trim())
       .filter(Boolean)
       .join(" × ");
-    return { ...info, dimensions: dimensions ? `${dimensions} cm` : "" };
+    return { ...info, dimensions: dimensions ? `${dimensions} mm` : "" };
   }
 
   useEffect(() => {
@@ -2445,6 +2576,7 @@ export default function VipOrganizer() {
       reanalyzeTimerRef.current = null;
     }
     setAdjustmentEditor(null);
+    setPreparedCutout(null);
   }
 
   async function ensureSession() {
@@ -2522,6 +2654,59 @@ export default function VipOrganizer() {
     } finally {
       pendingUploadsRef.current -= 1;
       if (pendingUploadsRef.current === 0) setBusy(false);
+    }
+  }
+
+  async function prepareCutout(files: FileList | File[] | null) {
+    const file = files?.[0];
+    if (!file) return;
+    if (!SUPPORTED_IMAGE_NAME.test(file.name)) {
+      setMessage("请上传 JPG、PNG 或 WebP 图片");
+      return;
+    }
+    setCutoutBusy(true);
+    setMessage("正在生成透明图和灰底检查图……");
+    try {
+      const currentSession = await ensureSession();
+      const preparedFile = await prepareOrganizerPhoto(file);
+      const result = await api.prepareVipOrganizerCutout(currentSession, preparedFile);
+      setPreparedCutout(result);
+      setMessage("抠图已完成，可以先用灰底图检查边缘，再导出或加入商品原图。");
+    } catch (error: any) {
+      setMessage(error.message || "抠图失败");
+    } finally {
+      setCutoutBusy(false);
+    }
+  }
+
+  function handleCutoutDrop(event: DragEvent<HTMLElement>) {
+    event.preventDefault();
+    setCutoutDragging(false);
+    if (cutoutBusy || busy) return;
+    void prepareCutout(event.dataTransfer.files);
+  }
+
+  function handleCutoutPaste(event: ClipboardEvent<HTMLElement>) {
+    const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+    if (!images.length || cutoutBusy || busy) return;
+    event.preventDefault();
+    void prepareCutout(images);
+  }
+
+  async function usePreparedCutout() {
+    if (!preparedCutout) return;
+    setCutoutBusy(true);
+    try {
+      const response = await fetch(preparedCutout.transparent_url, { cache: "no-store" });
+      if (!response.ok) throw new Error("透明图读取失败");
+      const blob = await response.blob();
+      const file = new File([blob], preparedCutout.file_name, { type: "image/png" });
+      await upload("product", [file]);
+      setMessage("透明图已加入“1. 上传素材”的商品原图。");
+    } catch (error: any) {
+      setMessage(error.message || "加入商品原图失败");
+    } finally {
+      setCutoutBusy(false);
     }
   }
 
@@ -2983,6 +3168,43 @@ export default function VipOrganizer() {
         <h1>自动化整理</h1>
       </header>
 
+      <section
+        className={`panel organizer-preparation-panel${cutoutDragging ? " is-dragging" : ""}`}
+        tabIndex={0}
+        aria-label="正面主图抠图上传区"
+        onPaste={handleCutoutPaste}
+        onDragEnter={(event) => { event.preventDefault(); if (!cutoutBusy && !busy) setCutoutDragging(true); }}
+        onDragOver={(event) => {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = cutoutBusy || busy ? "none" : "copy";
+          if (!cutoutBusy && !busy) setCutoutDragging(true);
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setCutoutDragging(false);
+        }}
+        onDrop={handleCutoutDrop}
+      >
+        <div className="section-title-row">
+          <div><h2>准备区（可选）· 正面主图抠图</h2><p>不使用也不会影响后续功能。可拖入、点击选择，或点击此区域后按 Ctrl+V 粘贴正面主图。</p></div>
+          <label className="organizer-prepare-upload">
+            {cutoutBusy ? <LoaderCircle className="spin" size={18} /> : <UploadCloud size={18} />}
+            {cutoutBusy ? "正在精细抠图" : cutoutDragging ? "松开即可抠图" : "选择正面主图"}
+            <input type="file" accept="image/*" disabled={cutoutBusy || busy} onChange={(event) => {
+              void prepareCutout(event.target.files);
+              event.currentTarget.value = "";
+            }} />
+          </label>
+        </div>
+        {preparedCutout ? <div className="organizer-cutout-results">
+          <figure className="transparent-checker"><img src={preparedCutout.transparent_url} alt="透明 PNG 结果" /><figcaption>透明 PNG</figcaption></figure>
+          <figure><img src={preparedCutout.gray_preview_url} alt="灰底边缘检查图" /><figcaption>灰底边缘检查</figcaption></figure>
+          <div className="organizer-cutout-actions">
+            <a className="button-link" href={preparedCutout.download_url} download={preparedCutout.file_name}><Download size={18} />导出透明 PNG</a>
+            <button type="button" className="primary" disabled={cutoutBusy || busy} onClick={() => void usePreparedCutout()}><FileImage size={18} />用于功能 1 的商品原图</button>
+          </div>
+        </div> : <div className="organizer-preparation-empty"><FileImage size={28} /><span>尚未生成；可直接跳过，从下方“1. 上传素材”开始。</span></div>}
+      </section>
+
       <section className="panel organizer-source-panel">
         <div className="section-title-row">
           <h2>1. 上传素材</h2>
@@ -3063,9 +3285,9 @@ export default function VipOrganizer() {
           <div className="section-title-row"><h2>3. 商品信息</h2></div>
           <div className="organizer-info-grid">
             <label>商品名称<input value={info.product_name} onChange={(event) => setInfo({ ...info, product_name: event.target.value })} /></label>
-            <label>长（cm）<input inputMode="decimal" placeholder="例如：20" value={info.product_length} onChange={(event) => setInfo({ ...info, product_length: event.target.value })} /></label>
-            <label>宽（cm）<input inputMode="decimal" placeholder="例如：8" value={info.product_width} onChange={(event) => setInfo({ ...info, product_width: event.target.value })} /></label>
-            <label>高（cm）<input inputMode="decimal" placeholder="例如：14" value={info.product_height} onChange={(event) => setInfo({ ...info, product_height: event.target.value })} /></label>
+            <label>长（mm）<input inputMode="decimal" placeholder="例如：200" value={info.product_length} onChange={(event) => setInfo({ ...info, product_length: event.target.value })} /></label>
+            <label>宽（mm）<input inputMode="decimal" placeholder="例如：80" value={info.product_width} onChange={(event) => setInfo({ ...info, product_width: event.target.value })} /></label>
+            <label>高（mm）<input inputMode="decimal" placeholder="例如：140" value={info.product_height} onChange={(event) => setInfo({ ...info, product_height: event.target.value })} /></label>
             <label>主要材质<input value={info.main_material} onChange={(event) => setInfo({ ...info, main_material: event.target.value })} /></label>
             <label>里料材质<input value={info.lining_material} onChange={(event) => setInfo({ ...info, lining_material: event.target.value })} /></label>
             <label>包型背法<input placeholder="例如：单肩/斜挎" value={info.wearing_method} onChange={(event) => setInfo({ ...info, wearing_method: event.target.value })} /></label>

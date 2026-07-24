@@ -16,6 +16,8 @@ from ..services.vip_organizer_service import (
     export_file,
     export_zip,
     preview_file,
+    prepare_product_cutout,
+    prepared_cutout_file,
     render_previews,
     render_slot_preview,
     save_analysis_config,
@@ -88,6 +90,29 @@ def upload_assets(
         return save_assets(session_id, asset_type, files)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/prepare-cutout")
+def prepare_cutout(session_id: str = Form(...), file: UploadFile = File(...)):
+    try:
+        return prepare_product_cutout(session_id, file)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/prepared/{session_id}/{prepared_id}/{variant}")
+def get_prepared_cutout(session_id: str, prepared_id: str, variant: str):
+    try:
+        path = prepared_cutout_file(session_id, prepared_id, variant)
+        download = variant == "download"
+        return FileResponse(
+            path,
+            media_type="image/png",
+            filename="product-transparent.png" if download else None,
+            headers={"Cache-Control": "private, no-store"},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/assets/{image_id}/thumbnail")

@@ -275,6 +275,40 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         self.assertGreater(adjusted_box[0], automatic_box[0])
         self.assertLess(adjusted_box[1], automatic_box[1])
 
+    def test_detail_manual_adjustment_never_covers_the_title_area(self):
+        source = Image.new("RGB", (320, 480), "#b52226")
+        rendered = _detail_showcase_page(source, {"zoom": 1.8, "offset_y": -0.5})
+
+        # The editable 604/605 image starts below the fixed title. A strong
+        # upward movement must not paint source pixels into that title band.
+        for y in range(0, 135):
+            for x in range(rendered.width):
+                self.assertNotEqual(rendered.getpixel((x, y)), (181, 34, 38))
+
+    def test_detail_zoom_changes_are_continuous(self):
+        source = Image.new("RGB", (320, 480), "#b52226")
+        page_105 = _detail_showcase_page(source, {"zoom": 1.05})
+        page_110 = _detail_showcase_page(source, {"zoom": 1.10})
+
+        def source_bbox(image):
+            pixels = np.asarray(image)
+            mask = (
+                (pixels[:, :, 0] > 170)
+                & (pixels[:, :, 0] < 195)
+                & (pixels[:, :, 1] < 50)
+                & (pixels[:, :, 2] < 60)
+            )
+            return Image.fromarray((mask * 255).astype(np.uint8), mode="L").getbbox()
+
+        bbox_105 = source_bbox(page_105)
+        bbox_110 = source_bbox(page_110)
+        self.assertIsNotNone(bbox_105)
+        self.assertIsNotNone(bbox_110)
+        assert bbox_105 is not None and bbox_110 is not None
+        width_ratio = (bbox_110[2] - bbox_110[0]) / (bbox_105[2] - bbox_105[0])
+        self.assertGreater(width_ratio, 1.01)
+        self.assertLess(width_ratio, 1.08)
+
     def test_template_product_box_allows_upscaling(self):
         canvas = Image.new("RGB", (750, 665), "white")
         _paste_product(canvas, self._small_catalog_product(), (378, 270, 665, 470))
@@ -667,7 +701,7 @@ class VipOrganizerClassificationTests(unittest.TestCase):
         draw.arc((120, 20, 320, 360), 180, 360, fill=(30, 30, 30, 255), width=24)
         draw.rectangle((45, 250, 395, 680), fill=(70, 70, 70, 255))
         body = (45, 250, 395, 680)
-        product_info = {"product_length": "20", "product_height": "14"}
+        product_info = {"product_length": "200", "product_height": "140"}
 
         unconstrained = _jd_size_product_layout(
             cutout,

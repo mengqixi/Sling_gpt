@@ -1,7 +1,11 @@
+import io
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from fastapi import UploadFile
+from PIL import Image, ImageDraw
 
 from backend import database
 from backend.services import vip_organizer_service as service
@@ -85,6 +89,38 @@ class VipOrganizerSessionIsolationTests(unittest.TestCase):
         with database.db_session() as conn:
             ids = {row["id"] for row in conn.execute("SELECT id FROM vip_organizer_sessions")}
         self.assertEqual(ids, {session_b_next})
+
+    def test_prepared_cutout_is_downloadable_without_becoming_an_uploaded_asset(self):
+        session_id = service.start_session()["session_id"]
+        source = Image.new("RGB", (320, 320), "white")
+        ImageDraw.Draw(source).rounded_rectangle((70, 80, 250, 270), radius=22, fill="#244a73")
+        payload = io.BytesIO()
+        source.save(payload, format="JPEG", quality=95)
+        payload.seek(0)
+
+        result = service.prepare_product_cutout(
+            session_id,
+            UploadFile(filename="front.jpg", file=payload),
+        )
+
+        transparent = service.prepared_cutout_file(session_id, result["prepared_id"], "transparent")
+        gray = service.prepared_cutout_file(session_id, result["prepared_id"], "gray")
+        self.assertTrue(transparent.is_file())
+        self.assertTrue(gray.is_file())
+        with Image.open(transparent) as image:
+            self.assertEqual(image.mode, "RGBA")
+            self.assertEqual(image.getpixel((0, 0))[3], 0)
+        with Image.open(gray) as image:
+            self.assertEqual(image.mode, "RGB")
+            self.assertEqual(image.getpixel((0, 0)), (150, 152, 149))
+        with database.db_session() as conn:
+            asset_count = conn.execute(
+                "SELECT COUNT(*) AS total FROM vip_organizer_assets WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()["total"]
+        self.assertEqual(asset_count, 0)
+        with self.assertRaises(ValueError):
+            service.prepared_cutout_file(session_id, result["prepared_id"], "invalid")
 
 
 if __name__ == "__main__":
