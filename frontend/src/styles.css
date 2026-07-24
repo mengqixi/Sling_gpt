@@ -59,6 +59,8 @@
 .organizer-page { max-width: 1700px; }
 .organizer-page > .page-header h1, .organizer-page .section-title-row > h2, .organizer-analysis-header > h2 { margin-bottom: 0; }
 .organizer-preparation-panel, .organizer-source-panel, .organizer-analysis-panel, .organizer-info-panel, .organizer-slots-panel { margin-bottom: 16px; padding: 20px; }
+.organizer-preparation-panel { transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease; }
+.organizer-preparation-panel:focus-visible, .organizer-preparation-panel.is-dragging { border-color: #2b7562; outline: 0; background: #f3faf7; box-shadow: inset 0 0 0 2px rgba(43,117,98,.14); }
 .organizer-preparation-panel h2, .organizer-source-panel h2, .organizer-analysis-panel h2, .organizer-info-panel h2, .organizer-slots-panel h2 { margin: 0 0 10px; font-size: 20px; }
 .organizer-prepare-upload { display: inline-flex; min-height: 42px; align-items: center; gap: 7px; padding: 9px 13px; border: 1px solid #b7cbc3; border-radius: 5px; color: #1f5a4b; background: #fff; cursor: pointer; white-space: nowrap; }
 .organizer-prepare-upload input { display: none; }
