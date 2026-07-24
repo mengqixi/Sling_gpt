@@ -120,6 +120,12 @@ export const api = {
     files.forEach((file) => form.append("files", file));
     return request<any[]>("/api/vip-organizer/upload", { method: "POST", body: form });
   },
+  prepareVipOrganizerCutout: (sessionId: string, file: File) => {
+    const form = new FormData();
+    form.append("session_id", sessionId);
+    form.append("file", file);
+    return request<any>("/api/vip-organizer/prepare-cutout", { method: "POST", body: form });
+  },
   createApiConfig: (payload: any) => request<any>("/api/api-configs", { method: "POST", body: JSON.stringify(payload) }),
   updateApiConfig: (id: number, payload: any) => request<any>(`/api/api-configs/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteApiConfig: (id: number) => request(`/api/api-configs/${id}`, { method: "DELETE" }),

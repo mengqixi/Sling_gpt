@@ -41,10 +41,11 @@ JD_LOGO_BLACK_PATH = Path(__file__).resolve().parents[1] / "assets" / "elle_logo
 JD_LOGO_WHITE_PATH = Path(__file__).resolve().parents[1] / "assets" / "elle_logo_white.png"
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
-PREVIEW_RENDER_VERSION = 18
+PREVIEW_RENDER_VERSION = 19
 MAX_PREVIEW_CACHE_ENTRIES = 48
 JD_PHONE_HEIGHT_MM = 163.0
 JD_PHONE_LABEL = "iPhone 17 Pro Max"
+JD_MEASURE_COLOR = "#707070"
 
 
 SLOT_DEFINITIONS = [
@@ -1086,6 +1087,74 @@ def save_assets(session_id: str, asset_type: str, files: list[UploadFile]) -> li
     return saved
 
 
+def prepare_product_cutout(session_id: str, file: UploadFile) -> dict[str, str]:
+    """Create an optional transparent product image without adding it to the organizer inputs."""
+    with db_session() as conn:
+        exists = conn.execute("SELECT id FROM vip_organizer_sessions WHERE id = ?", (session_id,)).fetchone()
+    if not exists:
+        raise ValueError("整理会话已失效，请重新开始")
+    original_name = file.filename or "front.jpg"
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in ALLOWED_IMAGE_EXTENSIONS:
+        raise ValueError("请上传 JPG、PNG 或 WebP 图片")
+
+    prepared_id = uuid.uuid4().hex
+    prepared_dir = _session_result_dir(session_id) / "prepared" / prepared_id
+    prepared_dir.mkdir(parents=True, exist_ok=True)
+    source_path = prepared_dir / f"source{suffix}"
+    transparent_path = prepared_dir / "transparent.png"
+    gray_path = prepared_dir / "gray-preview.png"
+    try:
+        with source_path.open("wb") as output:
+            shutil.copyfileobj(file.file, output, length=UPLOAD_COPY_BUFFER_SIZE)
+        with Image.open(source_path) as source_image:
+            source_image.verify()
+        with Image.open(source_path) as source_image:
+            source = ImageOps.exif_transpose(source_image).convert("RGBA")
+        transparent = _normalized_product_page(
+            source,
+            transparent=True,
+            auto_handle_layout=True,
+            auto_tall_handle_drop=True,
+            auto_offset_y=-0.03,
+            manual_padding_ratio=0.18,
+        )
+        transparent.save(transparent_path, format="PNG", optimize=True)
+        gray = Image.new("RGB", transparent.size, "#969895")
+        gray.paste(transparent.convert("RGB"), (0, 0), transparent.getchannel("A"))
+        gray.save(gray_path, format="PNG", optimize=True)
+        source_path.unlink(missing_ok=True)
+        with db_session() as conn:
+            conn.execute(
+                "UPDATE vip_organizer_sessions SET updated_at = ? WHERE id = ?",
+                (now_iso(), session_id),
+            )
+    except Exception:
+        shutil.rmtree(prepared_dir, ignore_errors=True)
+        raise
+
+    base_url = f"/api/vip-organizer/prepared/{session_id}/{prepared_id}"
+    return {
+        "prepared_id": prepared_id,
+        "transparent_url": f"{base_url}/transparent",
+        "gray_preview_url": f"{base_url}/gray",
+        "download_url": f"{base_url}/download",
+        "file_name": f"{Path(original_name).stem}-透明.png",
+    }
+
+
+def prepared_cutout_file(session_id: str, prepared_id: str, variant: str) -> Path:
+    if not _valid_session_id(session_id) or not re.fullmatch(r"[0-9a-f]{32}", prepared_id):
+        raise ValueError("抠图结果不存在")
+    if variant not in {"transparent", "gray", "download"}:
+        raise ValueError("抠图结果不存在")
+    file_name = "gray-preview.png" if variant == "gray" else "transparent.png"
+    path = _session_result_dir(session_id) / "prepared" / prepared_id / file_name
+    if not path.is_file():
+        raise ValueError("抠图结果不存在")
+    return path
+
+
 def asset_thumbnail(image_id: int) -> Path:
     rows = _uploaded_rows([image_id])
     if not rows:
@@ -2058,10 +2127,14 @@ def _info_width_ruler_geometry(
             round(center[1] + (point[1] - center[1]) * scale + offset[1]),
         )
 
+    delta_x = end[0] - start[0]
+    delta_y = end[1] - start[1]
+    length = max(1.0, (delta_x ** 2 + delta_y ** 2) ** 0.5)
+    perpendicular = (-delta_y / length * 9.0, delta_x / length * 9.0)
     segments = [
         (start, end),
-        ((start[0] - 6, start[1] - 8), (start[0] + 5, start[1] + 7)),
-        ((end[0] - 5, end[1] - 7), (end[0] + 6, end[1] + 8)),
+        ((start[0] - perpendicular[0], start[1] - perpendicular[1]), (start[0] + perpendicular[0], start[1] + perpendicular[1])),
+        ((end[0] - perpendicular[0], end[1] - perpendicular[1]), (end[0] + perpendicular[0], end[1] + perpendicular[1])),
     ]
     return {
         "segments": [(transform(start), transform(end)) for start, end in segments],
@@ -2136,7 +2209,7 @@ def _dimension_value_mm(value: str | None) -> float | None:
     if not match:
         return None
     number = float(match.group(0))
-    if "mm" not in normalized:
+    if "cm" in normalized:
         number *= 10
     return number
 
@@ -2199,9 +2272,7 @@ def _info_page(
         body = _paste_info_product(image, product_image, adjustment)
         if not _has_manual_layout_adjustment(adjustment):
             base_body = body
-    linked_rulers = normalized["product_show_ruler"]
-    ruler_body = body if linked_rulers else base_body
-    ruler = _info_ruler_geometry(ruler_body)
+    ruler = _info_ruler_geometry(base_body)
     width_ruler = _info_width_ruler_geometry(base_body, adjustment)
 
     line_color = "#8a8a8a"
@@ -2241,8 +2312,16 @@ def _info_page(
         _font(18),
     )
 
+    ruler_layer = Image.new("RGBA", (image.width * 4, image.height * 4), (0, 0, 0, 0))
+    ruler_draw = ImageDraw.Draw(ruler_layer)
     for start, end in width_ruler["segments"]:
-        draw.line((start, end), fill=line_color, width=2)
+        ruler_draw.line(
+            (start[0] * 4, start[1] * 4, end[0] * 4, end[1] * 4),
+            fill=line_color,
+            width=8,
+        )
+    ruler_layer = ruler_layer.resize(image.size, Image.Resampling.LANCZOS)
+    image.paste(ruler_layer, (0, 0), ruler_layer)
     _draw_rotated_text(
         image,
         _dimension_mm(info.get("product_width") or ""),
@@ -2280,7 +2359,7 @@ def _detail_showcase_page(source: Image.Image, adjustment: dict[str, Any] | None
     draw.text(((750 - (title_box[2] - title_box[0])) / 2, 70), title, font=title_font, fill="#c4c4c4")
     box = (52, 181, 695, 704)
     if _has_manual_layout_adjustment(adjustment):
-        clip_box = _expanded_safe_box(box, canvas.size, padding_ratio=0.14)
+        clip_box = (30, 135, 720, 720)
     elif _has_light_studio_border(source):
         clip_box = _expanded_safe_box(box, canvas.size)
     else:
@@ -2649,7 +2728,7 @@ def _draw_jd_dimension_bar(
     vertical_label_side: str = "left",
 ) -> None:
     draw = ImageDraw.Draw(canvas)
-    color = "#777777"
+    color = JD_MEASURE_COLOR
     stroke = max(2, round(min(canvas.size) / 400))
     cap = max(8, round(min(canvas.size) * 0.014))
     font = _font(max(14, round(min(canvas.size) * 0.022)))
@@ -2865,7 +2944,7 @@ def _jd_size_comparison_page(
     )
 
     ruler_gap = max(28, round(width * 0.045))
-    product_ruler_body = rendered_body if normalized["product_show_ruler"] else base_layout["body_box"]
+    product_ruler_body = base_layout["body_box"]
     horizontal_y = min(height - 70, product_ruler_body[3] + ruler_gap)
     length_start, length_end = _transform_ruler_segment(
         (product_ruler_body[0], horizontal_y),
@@ -2955,7 +3034,7 @@ def _jd_size_comparison_page(
         (round((phone_box[0] + phone_box[2] - (label_box[2] - label_box[0])) / 2), phone_box[3] + 12),
         phone_label,
         font=label_font,
-        fill="#555555",
+        fill=JD_MEASURE_COLOR,
     )
     return canvas
 
