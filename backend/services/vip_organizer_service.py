@@ -8,6 +8,9 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
+import tempfile
 import textwrap
 import uuid
 import zipfile
@@ -39,9 +42,12 @@ JD_LOGO_FONT_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "
 JD_PHONE_REFERENCE_PATH = Path(__file__).resolve().parents[1] / "assets" / "iphone_reference.png"
 JD_LOGO_BLACK_PATH = Path(__file__).resolve().parents[1] / "assets" / "elle_logo_black.png"
 JD_LOGO_WHITE_PATH = Path(__file__).resolve().parents[1] / "assets" / "elle_logo_white.png"
+U2NETP_MODEL_PATH = Path(__file__).resolve().parents[1] / "assets" / "models" / "u2netp.onnx"
+CUTOUT_WORKER_PATH = Path(__file__).resolve().with_name("cutout_model_worker.py")
 _PREVIEW_LOCKS_GUARD = Lock()
 _PREVIEW_LOCKS: dict[str, Lock] = {}
 _CUTOUT_SEMAPHORE = Semaphore(3)
+_CUTOUT_INFERENCE_SEMAPHORE = Semaphore(1)
 PREVIEW_RENDER_VERSION = 19
 MAX_PREVIEW_CACHE_ENTRIES = 48
 JD_PHONE_HEIGHT_MM = 163.0
@@ -1115,7 +1121,9 @@ def prepare_product_cutout(session_id: str, file: UploadFile) -> dict[str, str]:
             source.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
             source = source.convert("RGBA")
         with _CUTOUT_SEMAPHORE:
-            cutout = _prepared_product_cutout(source)
+            with _CUTOUT_INFERENCE_SEMAPHORE:
+                model_matte = _predict_product_matte(source)
+            cutout = _prepared_product_cutout(source, model_matte=model_matte)
         transparent = Image.new("RGBA", (800, 800), (255, 255, 255, 0))
         rendered = ImageOps.contain(cutout, (704, 704), Image.Resampling.LANCZOS)
         transparent.alpha_composite(
@@ -1563,7 +1571,44 @@ def _product_cutout(source: Image.Image) -> Image.Image:
     return result
 
 
-def _prepared_product_cutout(source: Image.Image) -> Image.Image:
+def _predict_product_matte(source: Image.Image) -> np.ndarray | None:
+    if not U2NETP_MODEL_PATH.exists() or not CUTOUT_WORKER_PATH.exists():
+        return None
+    with tempfile.TemporaryDirectory(prefix="sino-cutout-") as directory:
+        input_path = Path(directory) / "input.png"
+        output_path = Path(directory) / "matte.png"
+        source.convert("RGB").save(input_path, format="PNG", optimize=False)
+        environment = os.environ.copy()
+        environment.update({
+            "OMP_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+        })
+        try:
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(CUTOUT_WORKER_PATH),
+                    str(U2NETP_MODEL_PATH),
+                    str(input_path),
+                    str(output_path),
+                ],
+                check=True,
+                timeout=45,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+            )
+            with Image.open(output_path) as matte_image:
+                return np.asarray(matte_image.convert("L"), dtype=np.float32) / 255.0
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+
+
+def _prepared_product_cutout(
+    source: Image.Image,
+    model_matte: np.ndarray | None = None,
+) -> Image.Image:
     """Create a cleaner export cutout for white/light studio product photos.
 
     This stricter path is intentionally limited to the optional preparation
@@ -1602,6 +1647,13 @@ def _prepared_product_cutout(source: Image.Image) -> Image.Image:
         gradient_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
         gradient_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
         gradient = cv2.magnitude(gradient_x, gradient_y)
+        if model_matte is not None:
+            model_matte = cv2.resize(
+                model_matte,
+                (width, height),
+                interpolation=cv2.INTER_CUBIC,
+            )
+            model_matte = np.clip(model_matte, 0.0, 1.0)
 
         # Flood only light/neutral pixels connected to an outside edge. This
         # removes the studio backdrop without opening holes inside the bag.
@@ -1623,15 +1675,28 @@ def _prepared_product_cutout(source: Image.Image) -> Image.Image:
         # Refine uncertain light edges with GrabCut. Strongly coloured and dark
         # pixels are protected so chains, hardware and pale leather survive.
         grabcut = np.full((height, width), cv2.GC_PR_BGD, dtype=np.uint8)
-        grabcut[connected_background] = cv2.GC_BGD
         probable_foreground = initial_foreground > 0
+        if model_matte is not None:
+            probable_foreground |= model_matte >= 0.48
         grabcut[probable_foreground] = cv2.GC_PR_FGD
         sure_foreground = probable_foreground & (
             (lab_distance >= 66)
             | (saturation >= 48)
             | (value <= 145)
         )
+        if model_matte is not None:
+            sure_foreground |= model_matte >= 0.985
         grabcut[sure_foreground] = cv2.GC_FGD
+        reliable_connected_background = connected_background & (
+            (lab_distance <= 12)
+            | ((saturation <= 12) & (value >= 247))
+        )
+        exact_studio_background = (
+            (lab_distance <= 5)
+            & (saturation <= 8)
+            & (value >= 248)
+        )
+        grabcut[reliable_connected_background | exact_studio_background] = cv2.GC_BGD
         try:
             cv2.grabCut(
                 cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
@@ -1645,6 +1710,14 @@ def _prepared_product_cutout(source: Image.Image) -> Image.Image:
             mask = np.isin(grabcut, (cv2.GC_FGD, cv2.GC_PR_FGD))
         except cv2.error:
             mask = probable_foreground
+
+        if model_matte is not None:
+            textured_model_foreground = (
+                (model_matte >= 0.72)
+                & ((gradient >= 8) | (lab_distance >= 7) | (saturation >= 10))
+            )
+            mask[connected_background & ~textured_model_foreground] = False
+            mask[exact_studio_background] = False
 
         # GrabCut can shave off pale product edges that are close to a white
         # backdrop. Protect narrow, high-gradient parts already found by the
@@ -1662,8 +1735,16 @@ def _prepared_product_cutout(source: Image.Image) -> Image.Image:
                 :legacy_bottom - legacy_top,
                 :legacy_right - legacy_left,
             ]
-            edge_protection = (legacy_full > 80) & (gradient >= 18)
-            edge_protection &= (lab_distance >= 10) | (saturation >= 12) | (value <= 243)
+            distance_from_reliable_foreground = cv2.distanceTransform(
+                (~mask).astype(np.uint8),
+                cv2.DIST_L2,
+                3,
+            )
+            edge_protection = (
+                (legacy_full > 80)
+                & (distance_from_reliable_foreground <= max(4, min(height, width) * 0.007))
+                & ((gradient >= 10) | (lab_distance >= 7) | (value <= 247))
+            )
             mask |= edge_protection
 
         mask_u8 = mask.astype(np.uint8)
@@ -1681,20 +1762,179 @@ def _prepared_product_cutout(source: Image.Image) -> Image.Image:
             | (value <= 185)
         )
         structural_rows = structural_foreground.sum(axis=1)
-        product_bottom_rows = np.flatnonzero(
-            structural_rows >= max(10, int(structural_rows.max() * 0.18))
+        broad_rows = structural_rows >= max(10, int(structural_rows.max() * 0.55))
+        broad_labels_count, broad_labels = cv2.connectedComponents(
+            broad_rows.astype(np.uint8)[:, None],
+            8,
         )
+        broad_runs = [
+            np.flatnonzero(broad_labels[:, 0] == label)
+            for label in range(1, broad_labels_count)
+        ]
+        broad_runs = [run for run in broad_runs if run.size >= 3]
+        product_bottom_rows = max(broad_runs, key=lambda run: int(run[-1]), default=np.array([], dtype=int))
         if product_bottom_rows.size:
             dense_bottom = int(product_bottom_rows[-1])
-            yy = np.arange(height)[:, None]
-            shadow_tail = (
-                (yy > dense_bottom + max(2, height // 500))
-                & (saturation <= 38)
-                & (value >= 135)
-                & ((rgb.max(axis=2) - rgb.min(axis=2)) <= 28)
-                & (gradient <= 90)
+            central_material = mask_u8.astype(bool) & (
+                (saturation >= 24)
+                | (value <= 130)
+                | ((lab_distance >= 16) & (gradient >= 4))
             )
+            material_column_bottoms = []
+            for column in range(width // 5, width * 4 // 5):
+                material_rows = np.flatnonzero(central_material[:, column])
+                if material_rows.size:
+                    material_column_bottoms.append(int(material_rows[-1]))
+            if len(material_column_bottoms) >= max(12, width // 10):
+                material_bottom = int(np.percentile(material_column_bottoms, 60))
+                dense_bottom = min(
+                    dense_bottom,
+                    material_bottom + max(2, height // 350),
+                )
+            if model_matte is not None:
+                model_column_bottoms = []
+                for column in range(width // 4, width * 3 // 4):
+                    model_rows = np.flatnonzero(model_matte[:, column] >= 0.95)
+                    if model_rows.size:
+                        model_column_bottoms.append(int(model_rows[-1]))
+                if model_column_bottoms:
+                    dense_bottom = min(
+                        dense_bottom,
+                        int(np.percentile(model_column_bottoms, 90)),
+                    )
+            yy = np.arange(height)[:, None]
+            nearby_rows = mask_u8[
+                max(0, dense_bottom - max(8, height // 80)):dense_bottom + 1
+            ]
+            nearby_xs = np.flatnonzero(nearby_rows.any(axis=0))
+            body_left = int(nearby_xs.min()) if nearby_xs.size else width // 4
+            body_right = int(nearby_xs.max()) if nearby_xs.size else width * 3 // 4
+            xx = np.arange(width)[None, :]
+            inside_body_width = (xx >= body_left) & (xx <= body_right)
+            gold_detail = (
+                (gradient >= 18)
+                & (saturation >= 25)
+                & (rgb[:, :, 0].astype(np.int16) >= rgb[:, :, 2].astype(np.int16) + 7)
+                & (rgb[:, :, 1].astype(np.int16) >= rgb[:, :, 2].astype(np.int16) + 2)
+            )
+            dark_detail = (gradient >= 18) & (value <= 125)
+            outside_colored_detail = (
+                ~inside_body_width
+                & (gradient >= 16)
+                & (saturation >= 28)
+            )
+            model_detail = np.zeros((height, width), dtype=bool)
+            if model_matte is not None:
+                model_detail = (
+                    (model_matte >= 0.82)
+                    & (gradient >= 18)
+                    & ((saturation >= 18) | (value <= 150))
+                )
+            detail_below_body = (
+                gold_detail
+                | dark_detail
+                | outside_colored_detail
+                | model_detail
+            )
+            shadow_tail = (yy > dense_bottom) & ~detail_below_body
             mask_u8[shadow_tail] = 0
+
+            remaining_rows = np.flatnonzero(mask_u8.any(axis=1))
+            if remaining_rows.size:
+                floor_start = int(remaining_rows[-1]) - max(10, height // 18)
+                connected_floor_shadow = (
+                    (yy >= floor_start)
+                    & connected_background
+                    & (saturation <= 30)
+                    & (value >= 115)
+                    & (gradient <= 95)
+                    & ~(gold_detail | dark_detail | outside_colored_detail)
+                )
+                mask_u8[connected_floor_shadow] = 0
+
+                sample_top = height * 2 // 5
+                sample_bottom = height * 4 // 5
+                sample_left = width // 4
+                sample_right = width * 3 // 4
+                sample_mask = mask_u8[
+                    sample_top:sample_bottom,
+                    sample_left:sample_right,
+                ].astype(bool)
+                sample_saturation = saturation[
+                    sample_top:sample_bottom,
+                    sample_left:sample_right,
+                ][sample_mask]
+                sample_value = value[
+                    sample_top:sample_bottom,
+                    sample_left:sample_right,
+                ][sample_mask]
+                if sample_saturation.size:
+                    material_saturation = float(np.clip(
+                        np.median(sample_saturation) * 0.75,
+                        18,
+                        50,
+                    ))
+                    dark_product = bool(
+                        sample_value.size
+                        and float(np.median(sample_value)) <= 120
+                    )
+                    column_material = mask_u8.astype(bool) & (
+                        (saturation >= material_saturation)
+                        | (dark_product & (value <= 105))
+                        | gold_detail
+                    )
+                    material_rows = np.where(
+                        column_material,
+                        np.arange(height)[:, None],
+                        -1,
+                    )
+                    column_bottoms = material_rows.max(axis=0)
+                    smoothing_width = max(5, min(31, width // 80))
+                    if smoothing_width % 2 == 0:
+                        smoothing_width += 1
+                    padded_bottoms = np.pad(
+                        column_bottoms,
+                        smoothing_width // 2,
+                        mode="edge",
+                    )
+                    column_bottoms = np.median(
+                        np.lib.stride_tricks.sliding_window_view(
+                            padded_bottoms,
+                            smoothing_width,
+                        ),
+                        axis=1,
+                    ).astype(np.int32)
+                    below_column_material = (
+                        (column_bottoms[None, :] >= 0)
+                        & (yy > column_bottoms[None, :] + max(1, height // 800))
+                    )
+                    neutral_column_tail = (
+                        (yy >= floor_start)
+                        & below_column_material
+                        & mask_u8.astype(bool)
+                        & ~(
+                            gold_detail
+                            | (dark_product & dark_detail)
+                            | outside_colored_detail
+                        )
+                    )
+                    mask_u8[neutral_column_tail] = 0
+
+            # Shadows form broad, shallow islands under the product. Remove
+            # those islands while retaining narrow chain/hardware components.
+            tail = mask_u8.copy()
+            tail[:dense_bottom + 1, :] = 0
+            component_count, component_labels, component_stats, _ = cv2.connectedComponentsWithStats(tail, 8)
+            for component in range(1, component_count):
+                component_width = int(component_stats[component, cv2.CC_STAT_WIDTH])
+                component_height = int(component_stats[component, cv2.CC_STAT_HEIGHT])
+                component_area = int(component_stats[component, cv2.CC_STAT_AREA])
+                if (
+                    component_width >= max(12, width // 16)
+                    and component_height <= max(18, height // 45)
+                    and component_area >= max(30, width // 8)
+                ):
+                    mask_u8[component_labels == component] = 0
         mask = mask_u8 > 0
 
     ys, xs = np.where(mask)
@@ -1711,7 +1951,7 @@ def _prepared_product_cutout(source: Image.Image) -> Image.Image:
     cropped_mask = mask[top:bottom, left:right].astype(np.uint8)
     inside = cv2.distanceTransform(cropped_mask, cv2.DIST_L2, 3)
     outside = cv2.distanceTransform(1 - cropped_mask, cv2.DIST_L2, 3)
-    alpha = np.clip((inside - outside) * 110.0 + 128.0, 0, 255).astype(np.uint8)
+    alpha = np.clip((inside - outside) * 100.0 + 128.0, 0, 255).astype(np.uint8)
     alpha = cv2.GaussianBlur(alpha, (0, 0), 0.45)
 
     cropped_rgb = rgb[top:bottom, left:right].astype(np.float32)
@@ -1719,9 +1959,9 @@ def _prepared_product_cutout(source: Image.Image) -> Image.Image:
         cropped_lab_distance = lab_distance[top:bottom, left:right]
         cropped_saturation = saturation[top:bottom, left:right]
         cropped_value = value[top:bottom, left:right]
-        boundary = inside <= 3.5
-        neutral_fringe = boundary & (cropped_saturation <= 28) & (cropped_value >= 175)
-        fringe_strength = np.clip((cropped_lab_distance - 7.0) / 24.0, 0.0, 1.0)
+        boundary = (inside <= 4.0) & (outside <= 4.0)
+        neutral_fringe = boundary & (cropped_saturation <= 32) & (cropped_value >= 165)
+        fringe_strength = np.clip((cropped_lab_distance - 4.0) / 20.0, 0.0, 1.0)
         alpha_float = alpha.astype(np.float32)
         alpha_float[neutral_fringe] *= fringe_strength[neutral_fringe]
         alpha = alpha_float.astype(np.uint8)
@@ -1733,6 +1973,27 @@ def _prepared_product_cutout(source: Image.Image) -> Image.Image:
             cropped_rgb - background_color[None, None, :] * (1.0 - edge_alpha[:, :, None])
         ) / np.maximum(edge_alpha[:, :, None], 0.08)
         cropped_rgb[semi] = np.clip(recovered, 0, 255)[semi]
+
+        interior_seed = inside >= 5.0
+        if np.any(interior_seed) and np.any(neutral_fringe):
+            _, nearest_labels = cv2.distanceTransformWithLabels(
+                (~interior_seed).astype(np.uint8),
+                cv2.DIST_L2,
+                5,
+                labelType=cv2.DIST_LABEL_PIXEL,
+            )
+            interior_colors = cropped_rgb[interior_seed]
+            nearest_indices = np.clip(
+                nearest_labels.astype(np.int64) - 1,
+                0,
+                len(interior_colors) - 1,
+            )
+            nearest_colors = interior_colors[nearest_indices]
+            edge_mix = neutral_fringe[:, :, None].astype(np.float32) * 0.72
+            cropped_rgb = (
+                cropped_rgb * (1.0 - edge_mix)
+                + nearest_colors * edge_mix
+            )
 
     result = Image.fromarray(np.clip(cropped_rgb, 0, 255).astype(np.uint8), "RGB").convert("RGBA")
     result.putalpha(Image.fromarray(alpha, "L"))

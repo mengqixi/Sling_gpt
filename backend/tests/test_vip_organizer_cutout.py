@@ -41,6 +41,18 @@ class PreparedProductCutoutTests(unittest.TestCase):
         self.assertGreater(int(np.count_nonzero(semi)), 0)
         self.assertLess(float(np.mean(rgba[:, :, :3][semi].min(axis=1))), 220.0)
 
+    def test_pale_handle_is_preserved_without_filling_its_center(self):
+        source = Image.new("RGB", (480, 480), "white")
+        draw = ImageDraw.Draw(source)
+        draw.rounded_rectangle((95, 205, 385, 405), radius=35, fill="#ddd8c7")
+        draw.arc((150, 55, 330, 300), 180, 360, fill="#e7e2d2", width=18)
+
+        cutout = service._prepared_product_cutout(source)
+        alpha = np.asarray(cutout.getchannel("A"))
+
+        self.assertGreater(int(alpha[35:130, :].max()), 220)
+        self.assertEqual(int(alpha[0, alpha.shape[1] // 2]), 0)
+
     def test_vip_30_export_is_800_square_and_within_required_file_size(self):
         image = Image.new("RGBA", (1100, 900), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
